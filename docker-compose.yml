@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  multi-coin-bot:
+    build: .
+    container_name: multi-coin-faucet-bot
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Jakarta
+      - EMAIL=gi2h27@gmail.com
+      - MAX_CYCLES=100000
+      - SOLVER_URL=https://gi2h-xxx.hf.space
+      - SOLVER_KEY=00000000000000000000#0000000000000000000#000000000000000000#
+      - PYTHONUNBUFFERED=1
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
