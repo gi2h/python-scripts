@@ -88,7 +88,8 @@ COPY Api.zip .
 # ==========================================================
 
 
-RUN unzip -q Api.zip -d /app/Api && rm Api.zip
+RUN unzip /app/Api.zip -d /app && \
+    rm -f /app/Api.zip
 
 # ==========================================================
 # Python
