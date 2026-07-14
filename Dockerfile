@@ -1,107 +1,173 @@
-# ============================================
-# DOCKERFILE FAUCET BOT - WITH API ZIP EXTRACT
-# ============================================
 FROM python:3.9-slim
 
-# -------------------------------
-# 1. Install system dependencies + Xvfb + unzip
-# -------------------------------
-RUN apt-get update && apt-get install -y \
-    curl \
-    wget \
-    gnupg \
-    ca-certificates \
-    xz-utils \
-    xvfb \
-    unzip \
-    fonts-liberation \
-    libnss3 \
-    libatk-bridge2.0-0 \
-    libx11-xcb1 \
-    libxcb-dri3-0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    libatk1.0-0 \
-    libgtk-3-0 \
-    libxshmfence1 \
-    && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive
 
-# -------------------------------
-# 2. Install Google Chrome
-# -------------------------------
-RUN mkdir -p /etc/apt/keyrings \
-    && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub > /tmp/google.pub \
-    && gpg --dearmor < /tmp/google.pub > /etc/apt/keyrings/google-chrome.gpg \
-    && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm /tmp/google.pub
+# ==========================================================
+# System
+# ==========================================================
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        wget \
+        unzip \
+        xvfb \
+        dumb-init \
+        ca-certificates \
+        gnupg \
+        fonts-liberation \
+        fonts-noto-color-emoji \
+        libasound2 \
+        libatk-bridge2.0-0 \
+        libatk1.0-0 \
+        libcups2 \
+        libdrm2 \
+        libgbm1 \
+        libglib2.0-0 \
+        libgtk-3-0 \
+        libnspr4 \
+        libnss3 \
+        libu2f-udev \
+        libvulkan1 \
+        libx11-6 \
+        libx11-xcb1 \
+        libxcb1 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxkbcommon0 \
+        libxrandr2 \
+        libxrender1 \
+        libxshmfence1 && \
+    rm -rf /var/lib/apt/lists/*
+
+# ==========================================================
+# Google Chrome
+# ==========================================================
+
+RUN mkdir -p /etc/apt/keyrings && \
+    wget -qO- https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /etc/apt/keyrings/google.gpg && \
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list && \
+    apt-get update && \
+    apt-get install -y google-chrome-stable && \
+    rm -rf /var/lib/apt/lists/*
+
+# ==========================================================
+# NodeJS
+# ==========================================================
+
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    npm install -g npm@latest && \
+    npm cache clean --force
+
+# ==========================================================
+# Environment
+# ==========================================================
+
+ENV DISPLAY=:99
+ENV PYTHONUNBUFFERED=1
+ENV NODE_ENV=production
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV CHROME_BIN=/usr/bin/google-chrome
+ENV CHROME_PATH=/usr/bin/google-chrome
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 WORKDIR /app
 
-# -------------------------------
-# 3. Install Python dependencies
-# -------------------------------
+# ==========================================================
+# Copy Files
+# ==========================================================
+
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+COPY Api.zip .
 
-# -------------------------------
-# 4. Install Node.js 20
-# -------------------------------
-RUN mkdir -p /etc/apt/keyrings \
-    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
-    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
-    && apt-get update \
-    && apt-get install -y nodejs \
-    && rm -rf /var/lib/apt/lists/*
+# ==========================================================
+# Extract Api
+# ==========================================================
 
-# -------------------------------
-# 5. Copy & Extract API ZIP
-# -------------------------------
-COPY Api.zip /app/Api.zip
-RUN unzip /app/Api.zip -d /app && \
-    mv /app/Api* /app/Api || true && \
-    rm /app/Api.zip
+RUN unzip Api.zip && \
+    rm Api.zip
+
+# ==========================================================
+# Python
+# ==========================================================
+
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
+
+# ==========================================================
+# Node
+# ==========================================================
 
 WORKDIR /app/Api
+
 RUN npm install --omit=dev
+
+RUN npm install \
+    generic-pool \
+    p-queue@7 \
+    jimp \
+    tesseract.js \
+    playwright
 
 WORKDIR /app
 
-# -------------------------------
-# 6. Copy Python bot
-# -------------------------------
-COPY app.py .
+# ==========================================================
+# Startup Script
+# ==========================================================
 
-# -------------------------------
-# 7. Startup Script
-# -------------------------------
-RUN echo '#!/bin/bash\n\
-echo "🤖 STARTING FAUCET BOT"\n\
-echo "======================"\n\
-\n\
-echo "Starting Node.js API..."\n\
-cd /app/Api\n\
-node Api.js &\n\
-\n\
-echo "Waiting for API to start..."\n\
-sleep 5\n\
-\n\
-echo "Starting Python Bot..."\n\
-cd /app\n\
-xvfb-run -a python3 app.py\n\
-' > /start.sh && chmod +x /start.sh
+RUN cat > /start.sh <<'EOF'
+#!/bin/bash
+set -e
 
-# -------------------------------
-# 8. Healthcheck
-# -------------------------------
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:3000/ || exit 1
+echo "=================================="
+echo " Starting API Container"
+echo "=================================="
 
-EXPOSE 3000
+cleanup() {
+    echo "Stopping..."
+    pkill node || true
+    pkill chrome || true
+    pkill Xvfb || true
+    exit 0
+}
+
+trap cleanup SIGINT SIGTERM
+
+echo "Starting Xvfb..."
+
+Xvfb :99 \
+-screen 0 1366x768x24 \
+-ac \
++extension RANDR &
+
+sleep 2
+
+echo "Starting Api.js..."
+
+cd /app/Api
+
+exec node --no-deprecation Api.js
+
+EOF
+
+RUN chmod +x /start.sh
+
+# ==========================================================
+# Health Check
+# ==========================================================
+
+HEALTHCHECK \
+--interval=30s \
+--timeout=10s \
+--start-period=30s \
+--retries=5 \
+CMD curl -fs http://127.0.0.1:7860 || exit 1
+
+EXPOSE 7860
+
+ENTRYPOINT ["dumb-init","--"]
+
 CMD ["/start.sh"]
