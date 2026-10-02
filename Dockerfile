@@ -199,9 +199,9 @@ HEALTHCHECK \
     --timeout=10s \
     --start-period=60s \
     --retries=5 \
-    CMD curl -fsS http://127.0.0.1:7860/ || exit 1
+    CMD curl -fsS http://127.0.0.1:8080/ || exit 1
 
-EXPOSE 7860
+EXPOSE 8080
 
 ENTRYPOINT ["dumb-init", "--"]
 
