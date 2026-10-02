@@ -146,6 +146,29 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
+# ==========================================================
+# NEW: Force public DNS (fix NXDOMAIN on Railway)
+# ==========================================================
+echo "Forcing public DNS..."
+
+if [ -w /etc/resolv.conf ] || [ -w /etc ]; then
+    cat > /etc/resolv.conf <<DNS_EOF
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+options timeout:2 attempts:3 rotate
+DNS_EOF
+    echo "DNS override applied."
+else
+    echo "WARNING: /etc/resolv.conf is read-only, skipping DNS override."
+fi
+
+# Prioritas IPv4 untuk Node.js
+export NODE_OPTIONS="--dns-result-order=ipv4first --no-deprecation"
+
+# ==========================================================
+# Environment info
+# ==========================================================
+
 echo "Chrome:"
 google-chrome --version || true
 
@@ -157,6 +180,10 @@ npm --version || true
 
 echo "Python:"
 python --version || true
+
+echo "DNS check:"
+cat /etc/resolv.conf || true
+getent hosts brunhild.challenges.cloudflare.com || echo "DNS resolve test FAILED"
 
 echo "Starting Xvfb..."
 
@@ -182,7 +209,7 @@ cd /app/Api
 
 echo "Starting Api.js..."
 
-node --no-deprecation Api.js &
+node Api.js &
 NODE_PID=$!
 
 wait "$NODE_PID"
