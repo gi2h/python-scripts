@@ -1,6 +1,6 @@
 # ═══════════════════════════════════════════════════════════════
 # SatoFlow Turnstile Solver — Dockerfile
-# Fix: DNS resolver + Chromium dependencies + anti-bot bypass
+# Fix: DNS resolver + Chromium dependenncies + anti-bot bypass
 # ═══════════════════════════════════════════════════════════════
 FROM python:3.11-slim-bookworm
 
