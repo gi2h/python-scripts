@@ -18,40 +18,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # ==========================================================
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    wget \
-    unzip \
-    gnupg \
-    dumb-init \
-    xvfb \
-    dnsmasq \
-    netcat-openbsd \
-    iproute2 \
-    procps \
-    fonts-liberation \
-    fonts-noto-color-emoji \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libcups2 \
-    libdrm2 \
-    libgbm1 \
-    libglib2.0-0 \
-    libgtk-3-0 \
-    libnspr4 \
-    libnss3 \
-    libvulkan1 \
-    libx11-6 \
-    libx11-xcb1 \
-    libxcb1 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxkbcommon0 \
-    libxrandr2 \
-    libxrender1 \
+    ca-certificates curl wget unzip gnupg dumb-init xvfb \
+    dnsmasq netcat-openbsd iproute2 procps \
+    fonts-liberation fonts-noto-color-emoji \
+    libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 libdrm2 \
+    libgbm1 libglib2.0-0 libgtk-3-0 libnspr4 libnss3 libvulkan1 \
+    libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxdamage1 \
+    libxext6 libxfixes3 libxkbcommon0 libxrandr2 libxrender1 \
     libxshmfence1 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -84,25 +57,17 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
 # ==========================================================
 
 WORKDIR /app
-
 COPY requirements.txt /app/requirements.txt
 
-RUN python -m pip install --upgrade \
-        pip \
-        setuptools \
-        wheel && \
-    python -m pip install \
-        --no-cache-dir \
-        -r /app/requirements.txt
+RUN python -m pip install --upgrade pip setuptools wheel && \
+    python -m pip install --no-cache-dir -r /app/requirements.txt
 
 # ==========================================================
 # Application
 # ==========================================================
 
 COPY Api.zip /app/Api.zip
-
-RUN unzip -q /app/Api.zip -d /app && \
-    rm -f /app/Api.zip
+RUN unzip -q /app/Api.zip -d /app && rm -f /app/Api.zip
 
 # ==========================================================
 # Node dependencies
@@ -123,7 +88,7 @@ RUN npm install --omit=dev \
         tesseract.js \
         playwright
 
-# Playwright browser (kalau turnstile.js pakai playwright)
+# Playwright browser
 RUN npx playwright install chromium 2>/dev/null || echo "playwright chromium skip"
 RUN npx playwright install-deps chromium 2>/dev/null || true
 
@@ -143,163 +108,126 @@ echo "=================================="
 
 cleanup() {
     echo "Stopping..."
-
-    if [ -n "${TAIL_PID:-}" ]; then
-        kill "$TAIL_PID" 2>/dev/null || true
-    fi
-    if [ -n "${NODE_PID:-}" ]; then
-        kill "$NODE_PID" 2>/dev/null || true
-    fi
-    if [ -n "${XVFB_PID:-}" ]; then
-        kill "$XVFB_PID" 2>/dev/null || true
-    fi
-    if [ -n "${DNSMASQ_PID:-}" ]; then
-        kill "$DNSMASQ_PID" 2>/dev/null || true
-    fi
+    [ -n "${TAIL_PID:-}" ]    && kill "$TAIL_PID" 2>/dev/null || true
+    [ -n "${NODE_PID:-}" ]    && kill "$NODE_PID" 2>/dev/null || true
+    [ -n "${XVFB_PID:-}" ]    && kill "$XVFB_PID" 2>/dev/null || true
+    [ -n "${DNSMASQ_PID:-}" ] && kill "$DNSMASQ_PID" 2>/dev/null || true
 }
-
 trap cleanup INT TERM EXIT
 
 # ==========================================================
-# DNS — 6-layer fallback
+# DNS — paksa IPv4-only via dnsmasq (filter-AAAA)
 # ==========================================================
 echo "=================================="
-echo " DNS Setup"
+echo " DNS Setup (IPv4-only mode)"
 echo "=================================="
 echo "Before:"
 cat /etc/resolv.conf 2>/dev/null || echo "(empty)"
 echo ""
 
-DNS_CONTENT="nameserver 1.1.1.1
-nameserver 1.0.0.1
-nameserver 8.8.8.8
-nameserver 8.8.4.4
-options timeout:2 attempts:3 rotate"
+# Kill any existing dnsmasq
+pkill dnsmasq 2>/dev/null || true
+sleep 1
 
-DNS_OK=0
-
-# -- Layer 1: direct write
-if [ -w /etc/resolv.conf ]; then
-    printf '%s\n' "$DNS_CONTENT" > /etc/resolv.conf 2>/dev/null && \
-        DNS_OK=1 && echo "  [L1] direct write: OK"
+# Free port 53 if occupied
+if command -v ss >/dev/null 2>&1; then
+    ss -tulpn 2>/dev/null | grep ':53 ' || true
 fi
 
-# -- Layer 2: strip immutable flag then write
-if [ "$DNS_OK" = "0" ]; then
+# Write dnsmasq config
+cat > /tmp/dnsmasq.conf <<'DNSMASQ_EOF'
+no-resolv
+server=1.1.1.1
+server=1.0.0.1
+server=8.8.8.8
+server=8.8.4.4
+server=9.9.9.9
+filter-AAAA
+cache-size=1000
+listen-address=127.0.0.1
+bind-interfaces
+port=53
+user=root
+log-facility=/tmp/dnsmasq.log
+log-queries
+DNSMASQ_EOF
+
+echo "Starting dnsmasq (filter-AAAA = drop IPv6)..."
+dnsmasq --conf-file=/tmp/dnsmasq.conf >/tmp/dnsmasq.out 2>&1 &
+DNSMASQ_PID=$!
+sleep 2
+
+if ! kill -0 "$DNSMASQ_PID" 2>/dev/null; then
+    echo "ERROR: dnsmasq failed to start"
+    cat /tmp/dnsmasq.out || true
+    cat /tmp/dnsmasq.log 2>/dev/null || true
+    echo "Falling back to direct DNS..."
+    printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:3\n' > /etc/resolv.conf
+else
+    echo "dnsmasq running (PID $DNSMASQ_PID)"
+    # Point resolv.conf to local dnsmasq
     chattr -i /etc/resolv.conf 2>/dev/null || true
-    if [ -w /etc/resolv.conf ]; then
-        printf '%s\n' "$DNS_CONTENT" > /etc/resolv.conf 2>/dev/null && \
-            DNS_OK=1 && echo "  [L2] chattr -i + write: OK"
-    fi
+    printf 'nameserver 127.0.0.1\noptions timeout:2 attempts:2\n' > /etc/resolv.conf
 fi
 
-# -- Layer 3: remount /etc rw
-if [ "$DNS_OK" = "0" ]; then
-    mount -o remount,rw /etc 2>/dev/null || true
-    if [ -w /etc/resolv.conf ]; then
-        printf '%s\n' "$DNS_CONTENT" > /etc/resolv.conf 2>/dev/null && \
-            DNS_OK=1 && echo "  [L3] remount /etc rw: OK"
-    fi
-fi
+# Force IPv4 precedence for getaddrinfo (Node, Chrome, curl)
+cat > /etc/gai.conf <<'GAI_EOF'
+precedence ::ffff:0:0/96  100
+GAI_EOF
 
-# -- Layer 4: dnsmasq on 127.0.0.1
-if [ "$DNS_OK" = "0" ]; then
-    echo "  [L4] starting dnsmasq on 127.0.0.1:53..."
-    dnsmasq --no-resolv \
-            --server=1.1.1.1 \
-            --server=1.0.0.1 \
-            --server=8.8.8.8 \
-            --server=8.8.4.4 \
-            --listen-address=127.0.0.1 \
-            --bind-interfaces \
-            --port=53 \
-            --user=root \
-            --log-facility=/tmp/dnsmasq.log \
-            >/tmp/dnsmasq.log 2>&1 &
-    DNSMASQ_PID=$!
-    sleep 1
-    if kill -0 "$DNSMASQ_PID" 2>/dev/null; then
-        echo "  [L4] dnsmasq running (PID $DNSMASQ_PID)"
-        # Coba arahkan resolv.conf ke dnsmasq lokal
-        if [ -w /etc/resolv.conf ]; then
-            echo "nameserver 127.0.0.1" > /etc/resolv.conf 2>/dev/null && \
-                DNS_OK=1 && echo "  [L4] resolv.conf → 127.0.0.1"
-        fi
-    else
-        echo "  [L4] dnsmasq FAILED"
-    fi
-fi
-
-# -- Layer 5: /etc/hosts patch (last resort)
-if [ "$DNS_OK" = "0" ]; then
-    echo "  [L5] patching /etc/hosts..."
-    if [ -w /etc/hosts ]; then
-        cat >> /etc/hosts <<'HOSTS_EOF'
-
-# DNS fallback entries
-104.16.132.229 challenges.cloudflare.com
-104.16.133.229 challenges.cloudflare.com
-104.16.134.229 challenges.cloudflare.com
-1.1.1.1 one.one.one.one
-8.8.8.8 dns.google
-HOSTS_EOF
-        echo "  [L5] /etc/hosts patched"
-    else
-        echo "  [L5] /etc/hosts read-only, skipped"
-    fi
-fi
-
-# -- Layer 6: force Chrome/Node DoH via env (Node + Puppeteer-ish)
+# Node.js prefer IPv4
 export NODE_OPTIONS="--dns-result-order=ipv4first --no-deprecation"
+
+# Disable system IPv6 if kernel allows
+sysctl -w net.ipv6.conf.all.disable_ipv6=1 2>/dev/null || true
+sysctl -w net.ipv6.conf.default.disable_ipv6=1 2>/dev/null || true
 
 echo ""
 echo "After:"
 cat /etc/resolv.conf 2>/dev/null || echo "(empty)"
+echo ""
 
 # ==========================================================
-# DNS verification
+# DNS verification — expect IPv4 only now
 # ==========================================================
-echo ""
 echo "DNS verification:"
 for host in challenges.cloudflare.com www.clicks-hits.com google.com; do
-    if getent hosts "$host" >/dev/null 2>&1; then
-        ip=$(getent hosts "$host" 2>/dev/null | head -1 | awk '{print $1}')
-        echo "  OK   $host -> ${ip:-resolved}"
+    ipv4=$(getent ahostsv4 "$host" 2>/dev/null | head -1 | awk '{print $1}')
+    ipv6=$(getent ahostsv6 "$host" 2>/dev/null | head -1 | awk '{print $1}')
+    if [ -n "$ipv4" ]; then
+        echo "  OK   $host -> $ipv4"
     else
-        echo "  FAIL $host"
+        echo "  FAIL $host (no IPv4)"
+    fi
+    if [ -n "$ipv6" ]; then
+        echo "  WARN $host has IPv6: $ipv6 (will be filtered by Chrome if DoH not used)"
     fi
 done
 
 # ==========================================================
+# Quick connectivity test (IPv4 only)
+# ==========================================================
+echo ""
+echo "IPv4 connectivity test:"
+curl -4 -sS -o /dev/null -w "  challenges.cloudflare.com -> HTTP %{http_code} (%{time_total}s)\n" \
+    --max-time 10 https://challenges.cloudflare.com/turnstile/v0/api.js \
+    || echo "  IPv4 HTTPS to Cloudflare FAILED"
+
+# ==========================================================
 # Environment info
 # ==========================================================
+echo ""
+echo "Chrome: $(google-chrome --version 2>/dev/null || echo missing)"
+echo "Node:   $(node --version 2>/dev/null || echo missing)"
+echo "NPM:    $(npm --version 2>/dev/null || echo missing)"
+echo "Python: $(python --version 2>/dev/null || echo missing)"
+echo "Playwright browsers:"
+ls -la /ms-playwright 2>/dev/null | head -10 || echo "  (not found)"
 
 echo ""
-echo "Chrome:"
-google-chrome --version || true
-
-echo "Node:"
-node --version || true
-
-echo "NPM:"
-npm --version || true
-
-echo "Python:"
-python --version || true
-
-echo "Playwright browsers:"
-ls -la /ms-playwright 2>/dev/null || echo "  (not found)"
-
 echo "Starting Xvfb..."
-
-Xvfb :99 \
-    -screen 0 1366x768x24 \
-    -ac \
-    +extension RANDR \
-    >/tmp/xvfb.log 2>&1 &
-
+Xvfb :99 -screen 0 1366x768x24 -ac +extension RANDR >/tmp/xvfb.log 2>&1 &
 XVFB_PID=$!
-
 sleep 2
 
 if ! kill -0 "$XVFB_PID" 2>/dev/null; then
@@ -307,18 +235,14 @@ if ! kill -0 "$XVFB_PID" 2>/dev/null; then
     cat /tmp/xvfb.log || true
     exit 1
 fi
-
 echo "Xvfb ready"
 
 cd /app/Api
-
+echo ""
 echo "Starting Api.js..."
-
-# Jalankan Node — log ke stdout (Railway) + file (backup)
 node Api.js > /tmp/api.log 2>&1 &
 NODE_PID=$!
 
-# Tail log ke stdout supaya terlihat di Railway
 tail -f /tmp/api.log &
 TAIL_PID=$!
 
@@ -328,7 +252,7 @@ EOF
 RUN chmod +x /start.sh
 
 # ==========================================================
-# Health check
+# Healthcheck (pakai nc, bukan curl — hindari restart loop)
 # ==========================================================
 
 HEALTHCHECK \
@@ -341,5 +265,4 @@ HEALTHCHECK \
 EXPOSE 8080
 
 ENTRYPOINT ["dumb-init", "--"]
-
 CMD ["/start.sh"]
