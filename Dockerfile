@@ -1,235 +1,194 @@
-FROM python:3.11-slim
+# ═══════════════════════════════════════════════════════════════
+# SatoFlow Turnstile Solver — Dockerfile
+# Fix: DNS resolver + Chromium dependencies + anti-bot bypass
+# ═══════════════════════════════════════════════════════════════
+FROM python:3.11-slim-bookworm
 
+# ─────────────────────────────────────────────────────────────
+# ENV
+# ─────────────────────────────────────────────────────────────
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    NODE_ENV=production \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PORT=8080 \
     DISPLAY=:99 \
-    CHROME_BIN=/usr/bin/google-chrome \
-    CHROME_PATH=/usr/bin/google-chrome \
-    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+    CHROME_BIN=/usr/bin/chromium \
+    CHROMEDRIVER_PATH=/usr/bin/chromedriver
 
-# ==========================================================
-# System dependencies
-# ==========================================================
+# ─────────────────────────────────────────────────────────────
+# 1. DNS FIX — WAJIB PALING AWAL
+# Railway default resolv.conf sering rusak. Ganti dengan DNS publik.
+# ─────────────────────────────────────────────────────────────
+USER root
 
+RUN printf 'nameserver 1.1.1.1\nnameserver 1.0.0.1\nnameserver 8.8.8.8\nnameserver 8.8.4.4\noptions timeout:2 attempts:3 rotate\n' > /etc/resolv.conf
+
+# Cegah Railway overwrite /etc/resolv.conf (kalau diizinkan)
+RUN chattr +i /etc/resolv.conf 2>/dev/null || true
+
+# ─────────────────────────────────────────────────────────────
+# 2. System dependencies untuk Chromium
+# ─────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Chromium & driver
+    chromium \
+    chromium-driver \
+    # Chromium runtime libs
     ca-certificates \
-    curl \
-    wget \
-    unzip \
-    gnupg \
-    dumb-init \
-    xvfb \
     fonts-liberation \
     fonts-noto-color-emoji \
     libasound2 \
     libatk-bridge2.0-0 \
     libatk1.0-0 \
+    libatspi2.0-0 \
+    libcairo2 \
     libcups2 \
+    libdbus-1-3 \
     libdrm2 \
+    libexpat1 \
     libgbm1 \
     libglib2.0-0 \
     libgtk-3-0 \
     libnspr4 \
     libnss3 \
-    libvulkan1 \
+    libpango-1.0-0 \
     libx11-6 \
-    libx11-xcb1 \
     libxcb1 \
     libxcomposite1 \
     libxdamage1 \
     libxext6 \
     libxfixes3 \
+    libxi6 \
     libxkbcommon0 \
     libxrandr2 \
     libxrender1 \
-    libxshmfence1 \
-    && rm -rf /var/lib/apt/lists/*
+    libxss1 \
+    libxtst6 \
+    # Debug & network tools
+    dnsutils \
+    iputils-ping \
+    netcat-openbsd \
+    curl \
+    wget \
+    # Utilities
+    tini \
+    procps \
+    supervisor \
+    xvfb \
+    x11vnc \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# ==========================================================
-# Google Chrome
-# ==========================================================
+# ─────────────────────────────────────────────────────────────
+# 3. Chromium sanity check (build-time)
+# ─────────────────────────────────────────────────────────────
+RUN chromium --version && chromedriver --version
 
-RUN mkdir -p /etc/apt/keyrings && \
-    wget -qO- https://dl.google.com/linux/linux_signing_key.pub \
-        | gpg --dearmor -o /etc/apt/keyrings/google.gpg && \
-    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google.gpg] \
-        https://dl.google.com/linux/chrome/deb/ stable main" \
-        > /etc/apt/sources.list.d/google-chrome.list && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends google-chrome-stable && \
-    rm -rf /var/lib/apt/lists/*
-
-# ==========================================================
-# Node.js 20
-# ==========================================================
-
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends nodejs && \
-    npm cache clean --force && \
-    rm -rf /var/lib/apt/lists/*
-
-# ==========================================================
-# Python dependencies
-# ==========================================================
-
+# ─────────────────────────────────────────────────────────────
+# 4. Working directory
+# ─────────────────────────────────────────────────────────────
 WORKDIR /app
 
-COPY requirements.txt /app/requirements.txt
+# ─────────────────────────────────────────────────────────────
+# 5. Python dependencies
+# ─────────────────────────────────────────────────────────────
+# Copy requirements dulu (layer caching)
+COPY requirements.txt* ./
 
-RUN python -m pip install --upgrade \
-        pip \
-        setuptools \
-        wheel && \
-    python -m pip install \
-        --no-cache-dir \
-        -r /app/requirements.txt
-
-# ==========================================================
-# Application
-# ==========================================================
-
-COPY Api.zip /app/Api.zip
-
-RUN unzip -q /app/Api.zip -d /app && \
-    rm -f /app/Api.zip
-
-# ==========================================================
-# Node dependencies
-# ==========================================================
-
-WORKDIR /app/Api
-
-# package.json/package-lock.json sebaiknya berada di Api.zip
-RUN if [ -f package-lock.json ]; then \
-        npm ci --omit=dev; \
+RUN pip install --upgrade pip setuptools wheel && \
+    if [ -f requirements.txt ]; then \
+        pip install -r requirements.txt; \
     else \
-        npm install --omit=dev; \
+        pip install \
+            fastapi \
+            uvicorn[standard] \
+            gunicorn \
+            selenium \
+            undetected-chromedriver \
+            requests \
+            httpx \
+            aiohttp \
+            playwright \
+            pydantic \
+            python-dotenv; \
     fi
 
-# Dependency tambahan aplikasi
-RUN npm install --omit=dev \
-        generic-pool \
-        p-queue@7 \
-        jimp \
-        tesseract.js \
-        playwright
+# Install Playwright Chromium (kalau dipakai) — abaikan error kalau tidak ada
+RUN python -m playwright install chromium 2>/dev/null || true
 
-# ==========================================================
-# Runtime
-# ==========================================================
+# ─────────────────────────────────────────────────────────────
+# 6. Copy source code
+# ─────────────────────────────────────────────────────────────
+COPY . .
 
-WORKDIR /app
+# ─────────────────────────────────────────────────────────────
+# 7. Entrypoint script — test DNS sebelum start
+# ─────────────────────────────────────────────────────────────
+RUN printf '#!/bin/bash\n\
+set -e\n\
+echo "═══════════════════════════════════════════════════"\n\
+echo "  TURNSTILE SOLVER — STARTUP CHECK"\n\
+echo "═══════════════════════════════════════════════════"\n\
+echo ""\n\
+echo "── /etc/resolv.conf ──"\n\
+cat /etc/resolv.conf\n\
+echo ""\n\
+echo "── DNS resolution test ──"\n\
+for host in challenges.cloudflare.com www.clicks-hits.com google.com; do\n\
+    if nslookup "$host" >/dev/null 2>&1; then\n\
+        ip=$(nslookup "$host" 2>/dev/null | grep -A1 "Name:" | tail -1 | awk "{print \\$2}" | head -1)\n\
+        echo "  ✅ $host → ${ip:-resolved}"\n\
+    else\n\
+        echo "  ⚠️  $host → FAIL"\n\
+    fi\n\
+done\n\
+echo ""\n\
+echo "── HTTPS to Cloudflare ──"\n\
+if curl -sS -o /dev/null -w "  ✅ challenges.cloudflare.com → HTTP %{http_code} (%{time_total}s)\\n" --max-time 10 https://challenges.cloudflare.com/turnstile/v0/api.js; then\n\
+    :\n\
+else\n\
+    echo "  ❌ HTTPS FAIL"\n\
+fi\n\
+echo ""\n\
+echo "── Chromium version ──"\n\
+chromium --version 2>/dev/null || echo "  ❌ chromium not found"\n\
+chromedriver --version 2>/dev/null || echo "  ❌ chromedriver not found"\n\
+echo ""\n\
+echo "── Starting server ──"\n\
+echo "═══════════════════════════════════════════════════"\n\
+echo ""\n\
+exec "$@"\n' > /entrypoint.sh && chmod +x /entrypoint.sh
 
-RUN cat > /start.sh <<'EOF'
-#!/bin/sh
-set -eu
+# ─────────────────────────────────────────────────────────────
+# 8. Non-root user (Railway kadang butuh, tapi Chromium butuh root
+#    untuk beberapa flag. Kalau error, set kembali ke root.)
+# ─────────────────────────────────────────────────────────────
+# Tetap root agar --no-sandbox berfungsi penuh di Railway
 
-echo "=================================="
-echo " Starting API Container"
-echo "=================================="
-
-cleanup() {
-    echo "Stopping..."
-
-    if [ -n "${XVFB_PID:-}" ]; then
-        kill "$XVFB_PID" 2>/dev/null || true
-    fi
-
-    if [ -n "${NODE_PID:-}" ]; then
-        kill "$NODE_PID" 2>/dev/null || true
-    fi
-}
-
-trap cleanup INT TERM EXIT
-
-# ==========================================================
-# NEW: Force public DNS (fix NXDOMAIN on Railway)
-# ==========================================================
-echo "Forcing public DNS..."
-
-if [ -w /etc/resolv.conf ] || [ -w /etc ]; then
-    cat > /etc/resolv.conf <<DNS_EOF
-nameserver 1.1.1.1
-nameserver 8.8.8.8
-options timeout:2 attempts:3 rotate
-DNS_EOF
-    echo "DNS override applied."
-else
-    echo "WARNING: /etc/resolv.conf is read-only, skipping DNS override."
-fi
-
-# Prioritas IPv4 untuk Node.js
-export NODE_OPTIONS="--dns-result-order=ipv4first --no-deprecation"
-
-# ==========================================================
-# Environment info
-# ==========================================================
-
-echo "Chrome:"
-google-chrome --version || true
-
-echo "Node:"
-node --version || true
-
-echo "NPM:"
-npm --version || true
-
-echo "Python:"
-python --version || true
-
-echo "DNS check:"
-cat /etc/resolv.conf || true
-getent hosts brunhild.challenges.cloudflare.com || echo "DNS resolve test FAILED"
-
-echo "Starting Xvfb..."
-
-Xvfb :99 \
-    -screen 0 1366x768x24 \
-    -ac \
-    +extension RANDR \
-    >/tmp/xvfb.log 2>&1 &
-
-XVFB_PID=$!
-
-sleep 2
-
-if ! kill -0 "$XVFB_PID" 2>/dev/null; then
-    echo "ERROR: Xvfb failed"
-    cat /tmp/xvfb.log || true
-    exit 1
-fi
-
-echo "Xvfb ready"
-
-cd /app/Api
-
-echo "Starting Api.js..."
-
-node Api.js &
-NODE_PID=$!
-
-wait "$NODE_PID"
-EOF
-
-RUN chmod +x /start.sh
-
-# ==========================================================
-# Health check
-# ==========================================================
-
-HEALTHCHECK \
-    --interval=30s \
-    --timeout=10s \
-    --start-period=60s \
-    --retries=5 \
-    CMD curl -fsS http://127.0.0.1:8080/ || exit 1
-
+# ─────────────────────────────────────────────────────────────
+# 9. Expose port (Railway auto-detect dari $PORT)
+# ─────────────────────────────────────────────────────────────
 EXPOSE 8080
 
-ENTRYPOINT ["dumb-init", "--"]
+# ─────────────────────────────────────────────────────────────
+# 10. Healthcheck
+# ─────────────────────────────────────────────────────────────
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -fsS "http://localhost:${PORT}/" >/dev/null || exit 1
 
-CMD ["/start.sh"]
+# ─────────────────────────────────────────────────────────────
+# 11. Entrypoint & CMD
+# ─────────────────────────────────────────────────────────────
+ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
+
+# Auto-detect: ganti ini sesuai framework Anda
+# FastAPI/Uvicorn:
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1 --timeout-keep-alive 75"]
+
+# Kalau pakai Flask/Gunicorn, comment CMD di atas dan pakai ini:
+# CMD ["sh", "-c", "gunicorn -w 1 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-8080} --timeout 300 main:app"]
+
+# Kalau pakai Sanic:
+# CMD ["sh", "-c", "sanic main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1"]
