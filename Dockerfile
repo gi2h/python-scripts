@@ -16,7 +16,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # ==========================================================
 # System dependencies
 # ==========================================================
-
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl wget unzip gnupg dumb-init xvfb \
     dnsmasq netcat-openbsd iproute2 procps \
@@ -31,7 +30,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ==========================================================
 # Google Chrome
 # ==========================================================
-
 RUN mkdir -p /etc/apt/keyrings && \
     wget -qO- https://dl.google.com/linux/linux_signing_key.pub \
         | gpg --dearmor -o /etc/apt/keyrings/google.gpg && \
@@ -45,7 +43,6 @@ RUN mkdir -p /etc/apt/keyrings && \
 # ==========================================================
 # Node.js 20
 # ==========================================================
-
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get update && \
     apt-get install -y --no-install-recommends nodejs && \
@@ -55,7 +52,6 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
 # ==========================================================
 # Python dependencies
 # ==========================================================
-
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 
@@ -65,14 +61,12 @@ RUN python -m pip install --upgrade pip setuptools wheel && \
 # ==========================================================
 # Application
 # ==========================================================
-
 COPY Api.zip /app/Api.zip
 RUN unzip -q /app/Api.zip -d /app && rm -f /app/Api.zip
 
 # ==========================================================
 # Node dependencies
 # ==========================================================
-
 WORKDIR /app/Api
 
 RUN if [ -f package-lock.json ]; then \
@@ -88,14 +82,12 @@ RUN npm install --omit=dev \
         tesseract.js \
         playwright
 
-# Playwright browser
 RUN npx playwright install chromium 2>/dev/null || echo "playwright chromium skip"
 RUN npx playwright install-deps chromium 2>/dev/null || true
 
 # ==========================================================
 # Runtime
 # ==========================================================
-
 WORKDIR /app
 
 RUN cat > /start.sh <<'EOF'
@@ -116,32 +108,64 @@ cleanup() {
 trap cleanup INT TERM EXIT
 
 # ==========================================================
-# DNS — paksa IPv4-only via dnsmasq (filter-AAAA)
+# DNS SETUP — /etc/hosts + gai.conf + dnsmasq (fixed)
 # ==========================================================
 echo "=================================="
-echo " DNS Setup (IPv4-only mode)"
+echo " DNS Setup (IPv4-only)"
 echo "=================================="
 echo "Before:"
 cat /etc/resolv.conf 2>/dev/null || echo "(empty)"
 echo ""
 
-# Kill any existing dnsmasq
-pkill dnsmasq 2>/dev/null || true
-sleep 1
+# ---- Step 1: /etc/hosts IPv4 hardcoded (paling andal) ----
+echo "[1] Patching /etc/hosts with IPv4 Cloudflare..."
+# Cloudflare IPs dari log Anda (stabil, pakai anycast)
+cat >> /etc/hosts <<'HOSTS_EOF'
 
-# Free port 53 if occupied
-if command -v ss >/dev/null 2>&1; then
-    ss -tulpn 2>/dev/null | grep ':53 ' || true
+# ── Cloudflare IPv4 (drop IPv6 fallback) ──
+104.16.132.229  challenges.cloudflare.com
+104.16.133.229  challenges.cloudflare.com
+104.16.134.229  challenges.cloudflare.com
+104.16.135.229  challenges.cloudflare.com
+172.67.206.23   www.clicks-hits.com
+172.67.206.23   clicks-hits.com
+104.21.28.51    www.clicks-hits.com
+104.21.28.51    clicks-hits.com
+1.1.1.1         one.one.one.one
+1.1.1.1         cloudflare-dns.com
+HOSTS_EOF
+echo "    OK: /etc/hosts patched"
+
+# ---- Step 2: /etc/gai.conf precedence IPv4 ----
+echo "[2] Setting /etc/gai.conf (IPv4 first)..."
+cat > /etc/gai.conf <<'GAI_EOF'
+# Prefer IPv4 over IPv6
+precedence ::ffff:0:0/96  100
+GAI_EOF
+echo "    OK"
+
+# ---- Step 3: Disable IPv6 at kernel level ----
+echo "[3] Disabling IPv6 (kernel)..."
+sysctl -w net.ipv6.conf.all.disable_ipv6=1       2>/dev/null || true
+sysctl -w net.ipv6.conf.default.disable_ipv6=1   2>/dev/null || true
+sysctl -w net.ipv6.conf.lo.disable_ipv6=1        2>/dev/null || true
+
+if [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo 0)" = "1" ]; then
+    echo "    OK: IPv6 disabled at kernel"
+else
+    echo "    WARN: sysctl failed (container tanpa privilege), lanjut..."
 fi
 
-# Write dnsmasq config
+# ---- Step 4: dnsmasq dengan keep-in-foreground (PID fix) ----
+echo "[4] Starting dnsmasq (foreground mode)..."
+
+# Tulis config
 cat > /tmp/dnsmasq.conf <<'DNSMASQ_EOF'
 no-resolv
 server=1.1.1.1
 server=1.0.0.1
 server=8.8.8.8
 server=8.8.4.4
-server=9.9.9.9
 filter-AAAA
 cache-size=1000
 listen-address=127.0.0.1
@@ -149,47 +173,41 @@ bind-interfaces
 port=53
 user=root
 log-facility=/tmp/dnsmasq.log
-log-queries
 DNSMASQ_EOF
 
-echo "Starting dnsmasq (filter-AAAA = drop IPv6)..."
-dnsmasq --conf-file=/tmp/dnsmasq.conf >/tmp/dnsmasq.out 2>&1 &
+# Kill existing
+pkill dnsmasq 2>/dev/null || true
+sleep 1
+
+# --keep-in-foreground (-k) → tidak fork, PID bisa ditrack
+dnsmasq --keep-in-foreground --conf-file=/tmp/dnsmasq.conf >/tmp/dnsmasq.out 2>&1 &
 DNSMASQ_PID=$!
 sleep 2
 
-if ! kill -0 "$DNSMASQ_PID" 2>/dev/null; then
-    echo "ERROR: dnsmasq failed to start"
-    cat /tmp/dnsmasq.out || true
-    cat /tmp/dnsmasq.log 2>/dev/null || true
-    echo "Falling back to direct DNS..."
-    printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:3\n' > /etc/resolv.conf
-else
-    echo "dnsmasq running (PID $DNSMASQ_PID)"
-    # Point resolv.conf to local dnsmasq
+if kill -0 "$DNSMASQ_PID" 2>/dev/null; then
+    echo "    OK: dnsmasq running (PID $DNSMASQ_PID)"
+    # Redirect resolv.conf ke dnsmasq lokal
     chattr -i /etc/resolv.conf 2>/dev/null || true
-    printf 'nameserver 127.0.0.1\noptions timeout:2 attempts:2\n' > /etc/resolv.conf
+    printf 'nameserver 127.0.0.1\noptions timeout:2 attempts:2\n' > /etc/resolv.conf 2>/dev/null && \
+        echo "    OK: resolv.conf -> 127.0.0.1" || \
+        echo "    WARN: resolv.conf read-only, hosts file will do the work"
+else
+    echo "    WARN: dnsmasq gagal start — fallback ke /etc/hosts saja"
+    # Fallback: direct DNS
+    printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:2\n' > /etc/resolv.conf 2>/dev/null || true
 fi
-
-# Force IPv4 precedence for getaddrinfo (Node, Chrome, curl)
-cat > /etc/gai.conf <<'GAI_EOF'
-precedence ::ffff:0:0/96  100
-GAI_EOF
 
 # Node.js prefer IPv4
 export NODE_OPTIONS="--dns-result-order=ipv4first --no-deprecation"
 
-# Disable system IPv6 if kernel allows
-sysctl -w net.ipv6.conf.all.disable_ipv6=1 2>/dev/null || true
-sysctl -w net.ipv6.conf.default.disable_ipv6=1 2>/dev/null || true
-
 echo ""
 echo "After:"
 cat /etc/resolv.conf 2>/dev/null || echo "(empty)"
-echo ""
 
 # ==========================================================
-# DNS verification — expect IPv4 only now
+# DNS verification
 # ==========================================================
+echo ""
 echo "DNS verification:"
 for host in challenges.cloudflare.com www.clicks-hits.com google.com; do
     ipv4=$(getent ahostsv4 "$host" 2>/dev/null | head -1 | awk '{print $1}')
@@ -200,18 +218,20 @@ for host in challenges.cloudflare.com www.clicks-hits.com google.com; do
         echo "  FAIL $host (no IPv4)"
     fi
     if [ -n "$ipv6" ]; then
-        echo "  WARN $host has IPv6: $ipv6 (will be filtered by Chrome if DoH not used)"
+        echo "  WARN $host has IPv6: $ipv6"
+    else
+        echo "  OK   $host no IPv6 (good!)"
     fi
 done
 
 # ==========================================================
-# Quick connectivity test (IPv4 only)
+# IPv4 connectivity test
 # ==========================================================
 echo ""
 echo "IPv4 connectivity test:"
 curl -4 -sS -o /dev/null -w "  challenges.cloudflare.com -> HTTP %{http_code} (%{time_total}s)\n" \
     --max-time 10 https://challenges.cloudflare.com/turnstile/v0/api.js \
-    || echo "  IPv4 HTTPS to Cloudflare FAILED"
+    || echo "  IPv4 HTTPS FAILED"
 
 # ==========================================================
 # Environment info
@@ -222,7 +242,7 @@ echo "Node:   $(node --version 2>/dev/null || echo missing)"
 echo "NPM:    $(npm --version 2>/dev/null || echo missing)"
 echo "Python: $(python --version 2>/dev/null || echo missing)"
 echo "Playwright browsers:"
-ls -la /ms-playwright 2>/dev/null | head -10 || echo "  (not found)"
+ls /ms-playwright 2>/dev/null || echo "  (not found)"
 
 echo ""
 echo "Starting Xvfb..."
@@ -252,13 +272,12 @@ EOF
 RUN chmod +x /start.sh
 
 # ==========================================================
-# Healthcheck (pakai nc, bukan curl — hindari restart loop)
+# Healthcheck — lebih tolerant
 # ==========================================================
-
 HEALTHCHECK \
     --interval=30s \
     --timeout=10s \
-    --start-period=90s \
+    --start-period=120s \
     --retries=5 \
     CMD nc -z 127.0.0.1 8080 || exit 1
 
