@@ -17,7 +17,7 @@ PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome
 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright 
 NODE_OPTIONS=--dns-result-order=ipv4first
 
-==========================================================
+======================================.====================
 
 1. SYSTEM DEPENDENCIES
 
