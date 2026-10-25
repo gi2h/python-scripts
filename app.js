@@ -1,4 +1,4 @@
-// app.js - PERSISTENT BROWSER POOL
+// app.js
 
 const express = require("express");
 const { connect } = require("puppeteer-real-browser");
@@ -14,33 +14,37 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // =====================================================================
-// KONFIGURASI
+// KONFIGURASI QUEUE & BROWSER
 // =====================================================================
-const MAX_ACTIVE = 3;
-const MAX_QUEUE = 12;
-const QUEUE_TIMEOUT = 60000;
+const MAX_ACTIVE = 3;           // Maksimal 3 browser berjalan bersamaan
+const MAX_QUEUE = 12;           // Maksimal 12 antrean
+const QUEUE_TIMEOUT = 60000;    // 60 detik batas antre
+const MAX_CONTEXTS = 10;        // Restart browser setiap 10 task agar RAM bersih
 
 let activeTasks = 0;
 const tasks = {};
 const queue = [];
 
-// Browser Pool
-const browserPool = []; // [{ browser, busy }]
-let poolReady = false;
-let isInitializing = false;
+let browser;
+let browserStarting;
+let contextCounter = 0;
+let isResetting = false;
 
 // =====================================================================
-// BROWSER POOL INIT (Sekali saja)
+// BROWSER MANAGEMENT
 // =====================================================================
-async function initPool() {
-    if (poolReady || isInitializing) return;
-    isInitializing = true;
-    
-    console.log(`[POOL] Initializing ${MAX_ACTIVE} persistent browsers...`);
-    
-    for (let i = 0; i < MAX_ACTIVE; i++) {
-        try {
-            const { browser, page } = await connect({
+async function init_browser(proxyObj) {
+    console.log('[BROWSER] init_browser called');
+
+    if (!browser || !browser.isConnected()) {
+        browser = null;
+        if (!browserStarting) {
+            console.log("--- [BROWSER] Instance started ---");
+            
+            // Suntikkan Proxy via Args (Jauh lebih stabil)
+            const proxyArgs = proxyObj?.server ? [`--proxy-server=${proxyObj.server}`] : [];
+
+            browserStarting = connect({
                 headless: false, 
                 turnstile: true,
                 connectOption: {
@@ -55,76 +59,57 @@ async function initPool() {
                     "--disable-dev-shm-usage",
                     "--disable-setuid-sandbox",
                     "--disable-blink-features=AutomationControlled",
+                    // DNS Bypass
                     "--host-resolver-rules=MAP challenges.cloudflare.com 104.16.132.229, MAP *.challenges.cloudflare.com 104.16.132.229",
                     "--dns-over-https-mode=secure",
-                    "--dns-over-https-templates=https://cloudflare-dns.com/dns-query"
+                    "--dns-over-https-templates=https://cloudflare-dns.com/dns-query",
+                    ...proxyArgs
                 ],
+            }).then(ctx => {
+                browser = ctx.browser;
+                console.log('[BROWSER] Browser connected');
+                browser.on('disconnected', () => {
+                    browser = null;
+                    browserStarting = null; 
+                });
+                return browser;
+            }).catch(err => {
+                browserStarting = null;
+                throw { usr: "ERROR_CAPTCHA_UNSOLVABLE", api: `launch error: ${err.message}` };
             });
-            
-            // Tutup page default, kita akan buka page sendiri per task
-            await page.close().catch(() => {});
-            
-            browser.on('disconnected', () => {
-                const slot = browserPool.find(s => s.browser === browser);
-                if (slot) {
-                    slot.browser = null;
-                    slot.busy = false;
-                    console.log(`[POOL] Browser ${i} disconnected. Will re-init on next use.`);
-                }
-            });
-            
-            browserPool.push({ browser, busy: false, id: i });
-            console.log(`[POOL] Browser ${i} ready`);
-        } catch (err) {
-            console.error(`[POOL] Browser ${i} failed: ${err.message}`);
-            browserPool.push({ browser: null, busy: false, id: i });
         }
+        await browserStarting;
     }
-    
-    poolReady = true;
-    isInitializing = false;
-    console.log(`[POOL] Pool ready with ${browserPool.filter(s => s.browser).length}/${MAX_ACTIVE} browsers`);
-}
 
-// =====================================================================
-// ACQUIRE / RELEASE
-// =====================================================================
-async function acquireBrowser() {
-    // Tunggu jika semua busy
-    while (true) {
-        for (const slot of browserPool) {
-            if (!slot.busy) {
-                slot.busy = true;
-                
-                // Kalau browser crash, re-init
-                if (!slot.browser || !slot.browser.isConnected()) {
-                    console.log(`[POOL] Re-initializing browser ${slot.id}...`);
-                    try {
-                        const { browser, page } = await connect({
-                            headless: false, turnstile: true,
-                            connectOption: { defaultViewport: null, protocolTimeout: 120000 },
-                            disableXvfb: true, 
-                            args: ["--no-sandbox", "--display=:99", "--disable-gpu", "--disable-dev-shm-usage",
-                                   "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled",
-                                   "--host-resolver-rules=MAP challenges.cloudflare.com 104.16.132.229, MAP *.challenges.cloudflare.com 104.16.132.229",
-                                   "--dns-over-https-mode=secure", "--dns-over-https-templates=https://cloudflare-dns.com/dns-query"]
-                        });
-                        await page.close().catch(() => {});
-                        slot.browser = browser;
-                    } catch (e) {
-                        slot.busy = false;
-                        throw new Error(`Cannot re-init browser: ${e.message}`);
-                    }
-                }
-                return slot;
-            }
+    try {
+        const context = await browser.createBrowserContext();
+        const page = await context.newPage();
+        
+        if (proxyObj?.username) {
+            await page.authenticate({ 
+                username: proxyObj.username, 
+                password: proxyObj.password 
+            });
         }
-        await new Promise(r => setTimeout(r, 200));
+        
+        page.setDefaultNavigationTimeout(60000);
+        return { page, context }; 
+    } catch (err) {
+        throw { usr: "ERROR_CAPTCHA_UNSOLVABLE", api: `ctx error: ${err.message}` };
     }
 }
 
-function releaseBrowser(slot) {
-    slot.busy = false;
+async function reset_browser() {
+    if (isResetting) return;
+    isResetting = true;
+    browserStarting = null; 
+    if (browser) {
+        await browser.close().catch(() => {});
+        browser = null;
+    }
+    contextCounter = 0;
+    console.log("--- [BROWSER] Instance closed & rotated (RAM Cleared) ---");
+    isResetting = false;
 }
 
 // =====================================================================
@@ -133,13 +118,16 @@ function releaseBrowser(slot) {
 function processQueue() {
     if (activeTasks >= MAX_ACTIVE || queue.length === 0) return;
 
+    // Ambil antrean terdepan
     const taskId = queue.shift();
     const task = tasks[taskId];
 
+    // Jika task sudah dihapus atau error sebelumnya, lewati
     if (!task || task.status !== "pending") {
         return processQueue();
     }
 
+    // Batalkan timer antrean
     if (task.queueTimer) {
         clearTimeout(task.queueTimer);
         task.queueTimer = null;
@@ -148,76 +136,91 @@ function processQueue() {
     activeTasks++;
     task.status = "processing";
 
+    // Jalankan Task
     executeTask(taskId, task.data).finally(() => {
         activeTasks--;
+        // Setelah selesai, panggil processQueue lagi untuk task berikutnya
         setImmediate(() => processQueue());
     });
 }
 
 async function executeTask(taskId, data) {
-    let context = null;
-    let page = null;
-    let slot = null;
-    
+    let ctx = null;
     try {
-        slot = await acquireBrowser();
-        
-        // Buat CONTEXT BARU di browser yang di-reuse (isolasi penuh!)
-        context = await slot.browser.createBrowserContext();
-        page = await context.newPage();
-        
-        if (data.proxyObj?.username) {
-            await page.authenticate({
-                username: data.proxyObj.username,
-                password: data.proxyObj.password
-            });
+        if (contextCounter >= MAX_CONTEXTS) {
+            await reset_browser();
         }
-        
-        page.setDefaultNavigationTimeout(60000);
-        
+
+        ctx = await init_browser(data.proxyObj);
+        contextCounter++;
+
         let result;
         if (data.method === "turnstile") {
-            result = await turnstile({ domain: data.domain, siteKey: data.siteKey, action: data.action, cdata: data.cdata, pagedata: data.pagedata }, page);
+            result = await turnstile({ domain: data.domain, siteKey: data.siteKey, action: data.action, cdata: data.cdata, pagedata: data.pagedata }, ctx.page);
         } else if (data.method === "interstitial") {
-            result = await interstitial({ domain: data.domain, payload: data.payload }, page); 
+            result = await interstitial({ domain: data.domain, payload: data.payload }, ctx.page); 
         }
-        
+
         const solution = {};
         if (data.method === "turnstile") {
             solution.token = result.token;
         } else if (data.method === "interstitial") {
             solution.cf_clearance = result.solution?.clearance || "";
             solution.user_agent = result.solution?.user_agent || "";
-            if (result.solution?.__cf_bm) solution.__cf_bm = result.solution.__cf_bm;
+            if (result.solution?.__cf_bm) {
+                solution.__cf_bm = result.solution.__cf_bm;
+            }
         }
+
+        tasks[taskId] = { 
+            status: "ready", 
+            taskId: taskId,
+            solution: solution
+        };
         
-        tasks[taskId] = { status: "ready", taskId, solution };
+        // Hapus dari memori otomatis jika tidak di-poll dalam 30 detik
         setTimeout(() => { delete tasks[taskId]; }, 30000);
-        
+
     } catch (err) {
-        console.error(`[Task ${taskId}] Error:`, err);
+        console.error(`[Task ${taskId}] Solver error:`, err);
+        const usr = err.usr || "ERROR_CAPTCHA_UNSOLVABLE";
+        const api = err.api || err.message || String(err);
+        
         tasks[taskId] = {
-            status: "error", taskId,
-            err: { usr: err.usr || "ERROR_CAPTCHA_UNSOLVABLE", api: err.api || err.message }
+            status: "error",
+            taskId: taskId,
+            err: {
+                usr: usr,
+                api: api,
+                msg: "Internal solver error occurred."
+            } 
         };
         setTimeout(() => { delete tasks[taskId]; }, 10000);
+
     } finally {
-        // Close PAGE dan CONTEXT (bukan browser!)
-        if (page) await page.close().catch(() => {});
-        if (context) await context.close().catch(() => {});
-        if (slot) releaseBrowser(slot);
+        // BERSIHKAN BROWSER SEGERA (TANPA DELAY)
+        if (ctx) {
+            try {
+                if (ctx.page) await ctx.page.close().catch(() => {});
+                if (ctx.context) await ctx.context.close().catch(() => {});
+                console.log(`[Task ${taskId}] Browser context cleaned up immediately.`);
+            } catch (err) {
+                console.error(`[Task ${taskId}] cleanup failed`, err.message);
+            }
+        }
     }
 }
 
 // =====================================================================
-// ROUTES (sama seperti sebelumnya)
+// ROUTES
 // =====================================================================
 app.get("/", (req, res) => {
-    res.json({
+    res.status(200).json({
         status: "ok",
+        message: "ready",
         active: activeTasks,
         queue: queue.length,
-        pool: browserPool.map(s => ({ id: s.id, busy: s.busy, alive: !!(s.browser && s.browser.isConnected()) }))
+        uptime: `${Math.floor(process.uptime())}s`
     });
 });
 
@@ -225,13 +228,25 @@ app.post("/solve", async (req, res) => {
     const body = req.body;
     const reqTaskId = body.taskId;
 
+    // --- PROSES POLLING ---
     if (reqTaskId) {
         const existingTask = tasks[reqTaskId];
-        if (!existingTask) return res.json({ status: "error", taskId: reqTaskId, err: { usr: "TASK_NOT_FOUND" } });
-        if (existingTask.status !== "pending" && existingTask.status !== "processing") delete tasks[reqTaskId];
-        return res.json(existingTask);
+        if (!existingTask) {
+            return res.status(200).json({
+                status: "error",
+                taskId: reqTaskId,
+                err: { usr: "TASK_NOT_FOUND", api: "Task not found or expired." }
+            });
+        }
+        
+        // Jika client polling dan task sudah selesai/error, hapus dari memori
+        if (existingTask.status !== "pending" && existingTask.status !== "processing") {
+            delete tasks[reqTaskId];
+        }
+        return res.status(200).json(existingTask);
     }
 
+    // --- VALIDASI INPUT ---
     if (body.method !== "CloudflareTask" || typeof body.task !== "object") {
         return res.status(400).json({ status: "error", err: { usr: "BAD_PARAMETERS" } });
     }
@@ -242,42 +257,53 @@ app.post("/solve", async (req, res) => {
     const siteKey = task.websiteKey;
     const rawProxy = task.proxy;
 
+    // --- CEK QUEUE PENUH ---
     if (queue.length >= MAX_QUEUE) {
-        return res.status(429).json({ status: "error", err: { usr: "QUEUE_FULL", msg: "Slot antrean penuh, coba lagi." } });
+        return res.status(429).json({
+            status: "error",
+            err: { usr: "QUEUE_FULL", msg: "Slot antrean penuh, silakan coba lagi nanti." }
+        });
     }
 
+    // --- PARSE PROXY ---
     let proxyObj = null;
     if (rawProxy && typeof rawProxy === 'object' && rawProxy.host) {
         const pType = rawProxy.type || 'http';
         const auth = (rawProxy.user && rawProxy.pass) ? `${rawProxy.user}:${rawProxy.pass}@` : "";
-        const u = new URL(`${pType}://${auth}${rawProxy.host}:${rawProxy.port}`);
+        const proxyString = `${pType}://${auth}${rawProxy.host}:${rawProxy.port}`;
+        const u = new URL(proxyString);
         proxyObj = { server: `${u.protocol}//${u.host}`, username: u.username, password: u.password };
     } else if (typeof rawProxy === 'string') {
         const u = new URL(rawProxy);
         proxyObj = { server: `${u.protocol}//${u.host}`, username: u.username, password: u.password };
     }
 
+    // --- BUAT TASK BARU ---
     const newTaskId = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
     tasks[newTaskId] = { status: "pending", taskId: newTaskId };
     
+    // Timer jika task terlalu lama di antrean (60 detik)
     const queueTimer = setTimeout(() => {
         const idx = queue.indexOf(newTaskId);
         if (idx !== -1) {
             queue.splice(idx, 1);
-            tasks[newTaskId] = { status: "error", taskId: newTaskId, err: { usr: "QUEUE_TIMEOUT" } };
+            tasks[newTaskId] = {
+                status: "error",
+                taskId: newTaskId,
+                err: { usr: "QUEUE_TIMEOUT", msg: "Antrean gagal, melebihi 60 detik." }
+            };
+            console.log(`[Task ${newTaskId}] Queue Timeout (60s).`);
             setTimeout(() => { delete tasks[newTaskId]; }, 10000);
         }
     }, QUEUE_TIMEOUT);
 
+    // Simpan data untuk dieksekusi
     tasks[newTaskId].data = { method, domain, siteKey, action: task.action, cdata: task.cdata, pagedata: task.pdata, payload: task.payload, proxyObj };
     tasks[newTaskId].queueTimer = queueTimer;
 
     queue.push(newTaskId);
-    
-    // Pre-init pool saat request pertama datang
-    if (!poolReady) await initPool();
-    
-    processQueue();
+    processQueue(); // Coba jalankan jika ada slot kosong
+
     res.status(202).json({ taskId: newTaskId, status: "pending" });
 });
 
@@ -289,21 +315,13 @@ app.use((err, req, res, next) => {
 // =====================================================================
 // STARTUP & SHUTDOWN
 // =====================================================================
-app.listen(port, '0.0.0.0', async () => {
+app.listen(port, '0.0.0.0', () => {
     console.log(`Server running: http://0.0.0.0:${port}`);
-    console.log(`[CONFIG] Pool: ${MAX_ACTIVE} browsers | Queue: ${MAX_QUEUE} | Queue Timeout: ${QUEUE_TIMEOUT/1000}s`);
-    
-    // Pre-init pool supaya request pertama tidak lambat
-    await initPool();
+    console.log(`[CONFIG] Max Active: ${MAX_ACTIVE} | Max Queue: ${MAX_QUEUE} | Queue Timeout: ${QUEUE_TIMEOUT/1000}s`);
 });
 
 const cleanup = async (code) => {
-    console.log('Shutting down...');
-    for (const slot of browserPool) {
-        if (slot.browser) {
-            try { await slot.browser.close(); } catch (e) {}
-        }
-    }
+    if (browser) { try { await browser.close(); } catch (e) {} }
     process.exit(code);
 };
 process.on("SIGINT", () => cleanup(1));
