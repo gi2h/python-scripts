@@ -13,17 +13,26 @@ const port = process.env.PORT || 7860;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Concurrency
-const MAX_ACTIVE = Number(process.env.MAX_ACTIVE || 10);
+// =====================================================================
+// KONFIGURASI QUEUE & BROWSER
+// =====================================================================
+const MAX_ACTIVE = 3;           // Maksimal 3 browser berjalan bersamaan
+const MAX_QUEUE = 12;           // Maksimal 12 antrean
+const QUEUE_TIMEOUT = 60000;    // 60 detik batas antre
+const MAX_CONTEXTS = 10;        // Restart browser setiap 10 task agar RAM bersih
+
 let activeTasks = 0;
 const tasks = {};
+const queue = [];
 
 let browser;
 let browserStarting;
 let contextCounter = 0;
-const MAX_CONTEXTS = 25;
 let isResetting = false;
 
+// =====================================================================
+// BROWSER MANAGEMENT
+// =====================================================================
 async function init_browser(proxyObj) {
     console.log('[BROWSER] init_browser called');
 
@@ -31,6 +40,10 @@ async function init_browser(proxyObj) {
         browser = null;
         if (!browserStarting) {
             console.log("--- [BROWSER] Instance started ---");
+            
+            // Suntikkan Proxy via Args (Jauh lebih stabil)
+            const proxyArgs = proxyObj?.server ? [`--proxy-server=${proxyObj.server}`] : [];
+
             browserStarting = connect({
                 headless: false, 
                 turnstile: true,
@@ -46,61 +59,43 @@ async function init_browser(proxyObj) {
                     "--disable-dev-shm-usage",
                     "--disable-setuid-sandbox",
                     "--disable-blink-features=AutomationControlled",
-                    
-                    // ── [v4.8] FIX DNS OVERRIDE (BYPASS DNS RUSAK) ──
+                    // DNS Bypass
                     "--host-resolver-rules=MAP challenges.cloudflare.com 104.16.132.229, MAP *.challenges.cloudflare.com 104.16.132.229",
                     "--dns-over-https-mode=secure",
                     "--dns-over-https-templates=https://cloudflare-dns.com/dns-query",
-                    "--enable-features=DnsOverHttps"
+                    ...proxyArgs
                 ],
             }).then(ctx => {
                 browser = ctx.browser;
                 console.log('[BROWSER] Browser connected');
                 browser.on('disconnected', () => {
-                    console.log('[BROWSER] Browser disconnected');
                     browser = null;
                     browserStarting = null; 
                 });
                 return browser;
             }).catch(err => {
-                console.error("[BROWSER] Launch error:", err.message);
                 browserStarting = null;
-                throw {
-                    usr: "ERROR_CAPTCHA_UNSOLVABLE",
-                    api: `launch error: ${err.message}` 
-                };
+                throw { usr: "ERROR_CAPTCHA_UNSOLVABLE", api: `launch error: ${err.message}` };
             });
         }
         await browserStarting;
     }
 
     try {
-        console.log('[BROWSER] Creating context with proxy:', proxyObj?.server || 'none');
-        const contextOptions = proxyObj?.server ? { proxyServer: proxyObj.server } : {};
-        const context = await browser.createBrowserContext(contextOptions);
-        console.log('[BROWSER] Context created');
-        
+        const context = await browser.createBrowserContext();
         const page = await context.newPage();
-        console.log('[BROWSER] Page created');
         
         if (proxyObj?.username) {
-            console.log('[BROWSER] Setting proxy authentication...');
             await page.authenticate({ 
                 username: proxyObj.username, 
                 password: proxyObj.password 
             });
-            console.log('[BROWSER] Proxy auth set');
         }
         
         page.setDefaultNavigationTimeout(60000);
         return { page, context }; 
     } catch (err) {
-        console.error('[BROWSER] Context error:', err.message);
-        console.error('[BROWSER] Stack:', err.stack);
-        throw {
-            usr: "ERROR_CAPTCHA_UNSOLVABLE",
-            api: `ctx error: ${err.message}` 
-        };
+        throw { usr: "ERROR_CAPTCHA_UNSOLVABLE", api: `ctx error: ${err.message}` };
     }
 }
 
@@ -113,17 +108,119 @@ async function reset_browser() {
         browser = null;
     }
     contextCounter = 0;
-    console.log("--- [BROWSER] Instance closed & rotated ---");
+    console.log("--- [BROWSER] Instance closed & rotated (RAM Cleared) ---");
     isResetting = false;
 }
 
-// Router
+// =====================================================================
+// QUEUE PROCESSOR
+// =====================================================================
+function processQueue() {
+    if (activeTasks >= MAX_ACTIVE || queue.length === 0) return;
+
+    // Ambil antrean terdepan
+    const taskId = queue.shift();
+    const task = tasks[taskId];
+
+    // Jika task sudah dihapus atau error sebelumnya, lewati
+    if (!task || task.status !== "pending") {
+        return processQueue();
+    }
+
+    // Batalkan timer antrean
+    if (task.queueTimer) {
+        clearTimeout(task.queueTimer);
+        task.queueTimer = null;
+    }
+
+    activeTasks++;
+    task.status = "processing";
+
+    // Jalankan Task
+    executeTask(taskId, task.data).finally(() => {
+        activeTasks--;
+        // Setelah selesai, panggil processQueue lagi untuk task berikutnya
+        setImmediate(() => processQueue());
+    });
+}
+
+async function executeTask(taskId, data) {
+    let ctx = null;
+    try {
+        if (contextCounter >= MAX_CONTEXTS) {
+            await reset_browser();
+        }
+
+        ctx = await init_browser(data.proxyObj);
+        contextCounter++;
+
+        let result;
+        if (data.method === "turnstile") {
+            result = await turnstile({ domain: data.domain, siteKey: data.siteKey, action: data.action, cdata: data.cdata, pagedata: data.pagedata }, ctx.page);
+        } else if (data.method === "interstitial") {
+            result = await interstitial({ domain: data.domain, payload: data.payload }, ctx.page); 
+        }
+
+        const solution = {};
+        if (data.method === "turnstile") {
+            solution.token = result.token;
+        } else if (data.method === "interstitial") {
+            solution.cf_clearance = result.solution?.clearance || "";
+            solution.user_agent = result.solution?.user_agent || "";
+            if (result.solution?.__cf_bm) {
+                solution.__cf_bm = result.solution.__cf_bm;
+            }
+        }
+
+        tasks[taskId] = { 
+            status: "ready", 
+            taskId: taskId,
+            solution: solution
+        };
+        
+        // Hapus dari memori otomatis jika tidak di-poll dalam 30 detik
+        setTimeout(() => { delete tasks[taskId]; }, 30000);
+
+    } catch (err) {
+        console.error(`[Task ${taskId}] Solver error:`, err);
+        const usr = err.usr || "ERROR_CAPTCHA_UNSOLVABLE";
+        const api = err.api || err.message || String(err);
+        
+        tasks[taskId] = {
+            status: "error",
+            taskId: taskId,
+            err: {
+                usr: usr,
+                api: api,
+                msg: "Internal solver error occurred."
+            } 
+        };
+        setTimeout(() => { delete tasks[taskId]; }, 10000);
+
+    } finally {
+        // BERSIHKAN BROWSER SEGERA (TANPA DELAY)
+        if (ctx) {
+            try {
+                if (ctx.page) await ctx.page.close().catch(() => {});
+                if (ctx.context) await ctx.context.close().catch(() => {});
+                console.log(`[Task ${taskId}] Browser context cleaned up immediately.`);
+            } catch (err) {
+                console.error(`[Task ${taskId}] cleanup failed`, err.message);
+            }
+        }
+    }
+}
+
+// =====================================================================
+// ROUTES
+// =====================================================================
 app.get("/", (req, res) => {
-    const uptime = process.uptime();
     res.status(200).json({
         status: "ok",
         message: "ready",
-        uptime: `${Math.floor(uptime)}s`
+        active: activeTasks,
+        queue: queue.length,
+        uptime: `${Math.floor(process.uptime())}s`
     });
 });
 
@@ -131,242 +228,101 @@ app.post("/solve", async (req, res) => {
     const body = req.body;
     const reqTaskId = body.taskId;
 
+    // --- PROSES POLLING ---
     if (reqTaskId) {
         const existingTask = tasks[reqTaskId];
         if (!existingTask) {
             return res.status(200).json({
                 status: "error",
                 taskId: reqTaskId,
-                err: {
-                    usr: "TASK_NOT_FOUND",
-                    api: "Requested taskId does not exist in memory.",
-                    msg: "The task ID you provided is invalid or has expired."
-                }
+                err: { usr: "TASK_NOT_FOUND", api: "Task not found or expired." }
             });
+        }
+        
+        // Jika client polling dan task sudah selesai/error, hapus dari memori
+        if (existingTask.status !== "pending" && existingTask.status !== "processing") {
+            delete tasks[reqTaskId];
         }
         return res.status(200).json(existingTask);
     }
 
+    // --- VALIDASI INPUT ---
     if (body.method !== "CloudflareTask" || typeof body.task !== "object") {
-        return res.status(400).json({
-            status: "error",
-            err: {
-                usr: "BAD_PARAMETERS",
-                api: "Root parameter 'method' must be 'CloudflareTask' and 'task' must be an object.",
-                msg: "Please provide valid parameters."
-            }
-        });
+        return res.status(400).json({ status: "error", err: { usr: "BAD_PARAMETERS" } });
     }
 
     const task = body.task;
-
     const method = (task.type || "").toLowerCase();
     const domain = task.websiteUrl;
     const siteKey = task.websiteKey;
-    const action = task.action;
-    const cdata = task.cdata;
-    const pagedata = task.pdata || task.pagedata;
-    const payload = task.payload || null;
     const rawProxy = task.proxy;
 
-    if (method !== "turnstile" && method !== "interstitial") {
-        return res.status(400).json({
-            status: "error",
-            err: {
-                usr: "BAD_PARAMETERS",
-                api: "Task parameter 'type' is missing or not supported. Supported: turnstile, interstitial",
-                msg: "Please provide valid parameters."
-            }
-        });
-    }
-
-    if (method === "turnstile" && (!domain || !siteKey)) {
-        return res.status(400).json({
-            status: "error",
-            err: {
-                usr: "BAD_PARAMETERS",
-                api: "Method 'turnstile' requires both 'websiteUrl' and 'websiteKey'.",
-                msg: "Please provide valid parameters."
-            }
-        });
-    }
-
-    if (method === "interstitial" && !domain) {
-        return res.status(400).json({
-            status: "error",
-            err: {
-                usr: "BAD_PARAMETERS",
-                api: "Method 'interstitial' requires parameter 'websiteUrl'.",
-                msg: "Please provide valid parameters."
-            }
-        });
-    }
-
-    try {
-        const checkUrl = new URL(domain);
-        if (!['http:', 'https:'].includes(checkUrl.protocol)) {
-            throw new Error("Protocol must be http:// or https://");
-        }
-    } catch (e) {
-        return res.status(400).json({
-            status: "error",
-            err: { 
-                usr: "BAD_PARAMETERS", 
-                api: `Invalid 'websiteUrl': ${e.message}`,
-                msg: "Please provide a valid URL."
-            }
-        });
-    }
-
-    if (activeTasks >= MAX_ACTIVE) {
+    // --- CEK QUEUE PENUH ---
+    if (queue.length >= MAX_QUEUE) {
         return res.status(429).json({
             status: "error",
-            err: {
-                usr: "TOO_MANY_REQUESTS",
-                api: "Server cluster overload, max active capacity reached.",
-                msg: "Too many requests, please wait a moment."
-            }
+            err: { usr: "QUEUE_FULL", msg: "Slot antrean penuh, silakan coba lagi nanti." }
         });
     }
 
+    // --- PARSE PROXY ---
     let proxyObj = null;
-    if (rawProxy) {
-        try {
-            if (typeof rawProxy === 'object' && rawProxy.host && rawProxy.port) {
-                const pType = rawProxy.type || 'http';
-                const auth = (rawProxy.user && rawProxy.pass) ? `${rawProxy.user}:${rawProxy.pass}@` : "";
-                const proxyString = `${pType}://${auth}${rawProxy.host}:${rawProxy.port}`;
-                const u = new URL(proxyString);
-                proxyObj = { 
-                    server: `${u.protocol}//${u.host}`, 
-                    username: u.username, 
-                    password: u.password 
-                };
-            } else if (typeof rawProxy === 'string') {
-                const u = new URL(rawProxy);
-                proxyObj = { 
-                    server: `${u.protocol}//${u.host}`, 
-                    username: u.username, 
-                    password: u.password 
-                };
-            }
-        } catch (e) {
-            return res.status(400).json({
-                status: "error",
-                err: { 
-                    usr: "BAD_PARAMETERS", 
-                    api: `Proxy parse error: ${e.message}`, 
-                    msg: "Invalid proxy configuration." 
-                }
-            });
-        }
+    if (rawProxy && typeof rawProxy === 'object' && rawProxy.host) {
+        const pType = rawProxy.type || 'http';
+        const auth = (rawProxy.user && rawProxy.pass) ? `${rawProxy.user}:${rawProxy.pass}@` : "";
+        const proxyString = `${pType}://${auth}${rawProxy.host}:${rawProxy.port}`;
+        const u = new URL(proxyString);
+        proxyObj = { server: `${u.protocol}//${u.host}`, username: u.username, password: u.password };
+    } else if (typeof rawProxy === 'string') {
+        const u = new URL(rawProxy);
+        proxyObj = { server: `${u.protocol}//${u.host}`, username: u.username, password: u.password };
     }
 
+    // --- BUAT TASK BARU ---
     const newTaskId = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
-    activeTasks++;
-    tasks[newTaskId] = { status: "processing", taskId: newTaskId };
+    tasks[newTaskId] = { status: "pending", taskId: newTaskId };
     
-    res.status(202).json({
-        taskId: newTaskId,
-        status: "pending" 
-    });
-        
-    (async () => {
-        let ctx;     
-        try {
-            if (contextCounter >= MAX_CONTEXTS) {
-                await reset_browser();
-            }
-
-            ctx = await init_browser(proxyObj);
-            contextCounter++;
-
-            let result;
-            if (method === "turnstile") {
-                result = await turnstile({ domain, siteKey, action, cdata, pagedata }, ctx.page);
-            } else if (method === "interstitial") {
-                result = await interstitial({ domain, payload }, ctx.page); 
-            }
-
-            const solution = {};
-            if (method === "turnstile") {
-                solution.token = result.token;
-            } else if (method === "interstitial") {
-                solution.cf_clearance = result.solution?.clearance || "";
-                solution.user_agent = result.solution?.user_agent || "";
-                if (result.solution?.__cf_bm) {
-                    solution.__cf_bm = result.solution.__cf_bm;
-                }
-            }
-
-            tasks[newTaskId] = { 
-                status: "ready", 
-                taskId: newTaskId,
-                solution: solution
-            };
-            
-            setTimeout(() => { delete tasks[newTaskId]; }, 120000);
-
-        } catch (err) {
-            console.error(`[Task ${newTaskId}] Solver error:`, err);
-
-            const usr = err.usr || "ERROR_CAPTCHA_UNSOLVABLE";
-            const api = err.api || err.message || String(err);
-            
+    // Timer jika task terlalu lama di antrean (60 detik)
+    const queueTimer = setTimeout(() => {
+        const idx = queue.indexOf(newTaskId);
+        if (idx !== -1) {
+            queue.splice(idx, 1);
             tasks[newTaskId] = {
                 status: "error",
                 taskId: newTaskId,
-                err: {
-                    usr: usr,
-                    api: api,
-                    msg: usr === "ERROR_CAPTCHA_UNSOLVABLE" ? "Internal solver error occurred, please try again later" : "Solver encountered an error."
-                } 
+                err: { usr: "QUEUE_TIMEOUT", msg: "Antrean gagal, melebihi 60 detik." }
             };
-
+            console.log(`[Task ${newTaskId}] Queue Timeout (60s).`);
             setTimeout(() => { delete tasks[newTaskId]; }, 10000);
-
-        } finally {
-            activeTasks--;
-            
-            setTimeout(async () => {
-                try {
-                    if (ctx) {
-                        if (ctx.page) await ctx.page.close().catch(() => {});
-                        if (ctx.context) {
-                            await ctx.context.close().catch(() => {});
-                        }
-                    }
-                } catch (err) {
-                    console.error(`[Task ${newTaskId}] cleanup failed`, err.message);
-                }
-            }, 8000);
         }
-    })();
+    }, QUEUE_TIMEOUT);
+
+    // Simpan data untuk dieksekusi
+    tasks[newTaskId].data = { method, domain, siteKey, action: task.action, cdata: task.cdata, pagedata: task.pdata, payload: task.payload, proxyObj };
+    tasks[newTaskId].queueTimer = queueTimer;
+
+    queue.push(newTaskId);
+    processQueue(); // Coba jalankan jika ada slot kosong
+
+    res.status(202).json({ taskId: newTaskId, status: "pending" });
 });
 
+// Error Handler
 app.use((err, req, res, next) => {
-    console.error(err.stack);
-    res.status(500).json({
-        status: "error",
-        err: {
-            usr: "INTERNAL_SERVER_ERROR",
-            api: err.message || "Express global crash intercept",
-            msg: "An unexpected error occurred on the server."
-        }
-    });
+    res.status(500).json({ status: "error", err: { usr: "INTERNAL_SERVER_ERROR", api: err.message } });
 });
 
+// =====================================================================
+// STARTUP & SHUTDOWN
+// =====================================================================
 app.listen(port, '0.0.0.0', () => {
     console.log(`Server running: http://0.0.0.0:${port}`);
+    console.log(`[CONFIG] Max Active: ${MAX_ACTIVE} | Max Queue: ${MAX_QUEUE} | Queue Timeout: ${QUEUE_TIMEOUT/1000}s`);
 });
 
 const cleanup = async (code) => {
-    console.log(`(code: ${code}). Cleaning up...`);
-    if (browser) {
-        try { await browser.close(); } catch (e) { console.error("Error closing browser:", e.message); }
-    }
+    if (browser) { try { await browser.close(); } catch (e) {} }
     process.exit(code);
 };
-
 process.on("SIGINT", () => cleanup(1));
 process.on("SIGTERM", () => cleanup(9));

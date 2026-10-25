@@ -2,13 +2,12 @@
  * API_TURNSTILE (v15.0 Fixed URL Intercept + Checkbox Clicker)
  */
 async function turnstile({ domain, siteKey, action, cdata, pagedata }, page) {
-    const timeout = 120000; // 120 detik
+    const timeout = 120000; 
     const startTime = Date.now();
 
     try {
         await page.setDefaultNavigationTimeout(timeout);
         
-        // Ambil hostname murni (misal: memecoinwatch.ai) untuk Intersepsi URL
         let targetHost = domain;
         try { targetHost = new URL(domain).hostname; } catch (e) {}
 
@@ -21,7 +20,6 @@ async function turnstile({ domain, siteKey, action, cdata, pagedata }, page) {
                 <script>
                     window.__cfError = null;
                     window.__cfToken = null;
-                    
                     window.onloadTurnstileCallback = function () {
                         try {
                             turnstile.render('#cf-container', {
@@ -37,13 +35,9 @@ async function turnstile({ domain, siteKey, action, cdata, pagedata }, page) {
                                     c.value = token;
                                     document.body.appendChild(c);
                                 },
-                                'error-callback': function(code) {
-                                    window.__cfError = code;
-                                }
+                                'error-callback': function(code) { window.__cfError = code; }
                             });
-                        } catch(e) {
-                            window.__cfError = 'render_err: ' + e.message;
-                        }
+                        } catch(e) { window.__cfError = 'render_err'; }
                     };
                 </script>
                 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onloadTurnstileCallback" defer></script>
@@ -56,20 +50,12 @@ async function turnstile({ domain, siteKey, action, cdata, pagedata }, page) {
         
         page.on("request", async (request) => {
             try {
-                // FIX: Hanya intercept document yang mengandung targetHost (bukan exact match)
                 if (request.url().includes(targetHost) && request.resourceType() === "document") {
-                    console.log(`[ts] Injecting minimal HTML ke: ${request.url()}`);
-                    await request.respond({
-                        status: 200,
-                        contentType: "text/html",
-                        body: htmlContent
-                    });
+                    await request.respond({ status: 200, contentType: "text/html", body: htmlContent });
                 } else {
                     await request.continue();
                 }
-            } catch (e) {
-                // Abaikan error jika request sudah di-handle
-            }
+            } catch (e) {}
         });
 
         console.log(`[ts] Navigasi ke: ${domain}`);
@@ -79,27 +65,15 @@ async function turnstile({ domain, siteKey, action, cdata, pagedata }, page) {
         let hasClicked = false;
 
         while (Date.now() - startTime < timeout) {
-            // 1. Cek Token
-            const token = await page.evaluate(() => {
-                if (window.__cfToken) return window.__cfToken;
-                const el = document.querySelector('[name="cf-response"]');
-                return el ? el.value : null;
-            }).catch(() => null);
-
+            const token = await page.evaluate(() => window.__cfToken || document.querySelector('[name="cf-response"]')?.value).catch(() => null);
             if (token && token.length > 10) {
                 console.log(`[ts] ✅ Token didapat! (${token.length} chars)`);
-                await page.setRequestInterception(false).catch(() => {});
                 return { token, type: "turnstile" };
             }
 
-            // 2. Cek Error Render
             const errCode = await page.evaluate(() => window.__cfError).catch(() => null);
-            if (errCode) {
-                console.log(`[ts] ❌ Widget Error: ${errCode}`);
-                throw new Error(`Widget error code: ${errCode}`);
-            }
+            if (errCode) throw new Error(`Widget error code: ${errCode}`);
 
-            // 3. Inspeksi Iframe & Klik Checkbox Dinamis
             const frames = page.frames();
             const cfFrame = frames.find(f => f.url().includes("challenges.cloudflare.com"));
             
@@ -108,8 +82,6 @@ async function turnstile({ domain, siteKey, action, cdata, pagedata }, page) {
                     const frameData = await cfFrame.evaluate(() => {
                         const text = (document.body?.innerText || "").trim().replace(/\s+/g, " ");
                         const checkbox = document.querySelector('input[type="checkbox"]');
-                        
-                        // Jika ada checkbox dan belum dicentang, klik!
                         if (checkbox && !checkbox.checked) {
                             checkbox.click();
                             return { text, clicked: true };
@@ -117,16 +89,14 @@ async function turnstile({ domain, siteKey, action, cdata, pagedata }, page) {
                         return { text, clicked: false };
                     }).catch(() => ({ text: "", clicked: false }));
 
-                    // Log isi iframe setiap 5 detik
                     const elapsed = Math.floor((Date.now() - startTime) / 1000);
-                    if (elapsed > 0 && elapsed % 5 === 0 && elapsed !== lastState) {
+                    if (elapsed % 5 === 0 && elapsed > 0 && elapsed !== lastState) {
                         lastState = elapsed;
-                        console.log(`[ts-iframe] ${elapsed}s | Text: "${frameData.text.slice(0, 60)}"`);
+                        console.log(`[ts-iframe] ${elapsed}s | Text: "${frameData.text.slice(0, 50)}"`);
                     }
 
-                    // Fallback klik menggunakan kursor fisik jika DOM tidak bisa di-klik
-                    if ((frameData.text.includes("Verify you are human") || frameData.text.includes("Verify")) && !hasClicked) {
-                        console.log(`[ts] 👀 Mencoba klik fisik pada koordinat checkbox...`);
+                    if (frameData.text.includes("Verify") && !hasClicked) {
+                        console.log(`[ts] 👀 Klik fisik pada checkbox...`);
                         const iframeElement = await page.$('iframe[src*="challenges.cloudflare.com"]');
                         if (iframeElement) {
                             const box = await iframeElement.boundingBox();
@@ -136,33 +106,15 @@ async function turnstile({ domain, siteKey, action, cdata, pagedata }, page) {
                             }
                         }
                     }
-                } catch (e) {
-                    // Abaikan error cross-origin di dalam iframe
-                }
-            } else {
-                const elapsed = Math.floor((Date.now() - startTime) / 1000);
-                if (elapsed > 0 && elapsed % 5 === 0 && elapsed !== lastState) {
-                    lastState = elapsed;
-                    console.log(`[ts] ${elapsed}s — Menunggu iframe Cloudflare...`);
-                }
+                } catch (e) {}
             }
-
             await new Promise(r => setTimeout(r, 1000));
         }
-
         throw new Error("timeout error");
-
     } catch (e) {
-        console.error('[ts] Error:', e.message);
-        throw { 
-            usr: "ERROR_CAPTCHA_UNSOLVABLE", 
-            api: e.message || String(e) 
-        };
+        throw { usr: "ERROR_CAPTCHA_UNSOLVABLE", api: e.message };
     } finally {
-        try {
-            await page.setRequestInterception(false);
-        } catch {}
+        try { await page.setRequestInterception(false); } catch {}
     }
 }
-
 module.exports = turnstile;
