@@ -9,10 +9,9 @@ RUN apt-get update && apt-get install -y \
     && rm google-chrome-stable_current_amd64.deb \
     && rm -rf /var/lib/apt/lists/*
 
-# ── [v4.8] FIX DNS: HARDCODE HOSTS UNTUK CLOUDFLARE ──
-# Memastikan container selalu resolve ke IP Cloudflare yang valid
-RUN echo "nameserver 1.1.1.1" > /etc/resolv.conf && \
-    echo "104.16.132.229 challenges.cloudflare.com" >> /etc/hosts && \
+# ── [FIX] Hardcode /etc/hosts untuk Cloudflare ──
+# Baris resolv.conf dihapus karena Docker menguncinya (read-only).
+RUN echo "104.16.132.229 challenges.cloudflare.com" >> /etc/hosts && \
     echo "104.16.132.229 brunhid.challenges.cloudflare.com" >> /etc/hosts
 
 WORKDIR /A
