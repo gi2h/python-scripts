@@ -9,11 +9,6 @@ RUN apt-get update && apt-get install -y \
     && rm google-chrome-stable_current_amd64.deb \
     && rm -rf /var/lib/apt/lists/*
 
-# ── [FIX] Hardcode /etc/hosts untuk Cloudflare ──
-# Baris resolv.conf dihapus karena Docker menguncinya (read-only).
-RUN echo "104.16.132.229 challenges.cloudflare.com" >> /etc/hosts && \
-    echo "104.16.132.229 brunhid.challenges.cloudflare.com" >> /etc/hosts
-
 WORKDIR /A
 
 COPY package*.json ./
@@ -24,4 +19,4 @@ COPY . .
 
 EXPOSE 7860
 
-CMD ["sh", "-c", "rm -f /tmp/.X99-lock && Xvfb :99 -screen 0 1024x768x24 & export DISPLAY=:99 && exec npm start"]
+CMD ["sh", "-c", "(echo '104.16.132.229 challenges.cloudflare.com' >> /etc/hosts; echo '104.16.132.229 brunhid.challenges.cloudflare.com' >> /etc/hosts) 2>/dev/null || true; rm -f /tmp/.X99-lock && Xvfb :99 -screen 0 1024x768x24 & export DISPLAY=:99 && exec npm start"]
