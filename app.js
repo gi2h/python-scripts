@@ -14,7 +14,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // =====================================================================
-// KONFIGURASI QUEUE & BROWSER (ENV READY)
+// KONFIGURASI  QUEUE & BROWSER (ENV READY)
 // =====================================================================
 // parseInt() digunakan untuk mengubah string dari env menjadi angka
 const MAX_ACTIVE = parseInt(process.env.MAX_ACTIVE, 10) || 2;           
