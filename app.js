@@ -14,7 +14,6 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // =====================================================================
-// =====================================================================
 // KONFIGURASI QUEUE & BROWSER (ENV READY)
 // =====================================================================
 // parseInt() digunakan untuk mengubah string dari env menjadi angka
@@ -245,7 +244,15 @@ app.post("/solve", async (req, res) => {
         if (existingTask.status !== "pending" && existingTask.status !== "processing") {
             delete tasks[reqTaskId];
         }
-        return res.status(200).json(existingTask);
+
+        // 🔥 PERBAIKAN DI SINI: Hanya kirim data yang aman (tanpa timer) 🔥
+        const safeResponse = {
+            status: existingTask.status,
+            taskId: existingTask.taskId,
+            solution: existingTask.solution || null,
+            err: existingTask.err || null
+        };
+        return res.status(200).json(safeResponse);
     }
 
     // --- VALIDASI INPUT ---
