@@ -14,12 +14,14 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // =====================================================================
-// KONFIGURASI QUEUE & BROWSER
 // =====================================================================
-const MAX_ACTIVE = 3;           // Maksimal 3 browser berjalan bersamaan
-const MAX_QUEUE = 12;           // Maksimal 12 antrean
-const QUEUE_TIMEOUT = 60000;    // 60 detik batas antre
-const MAX_CONTEXTS = 10;        // Restart browser setiap 10 task agar RAM bersih
+// KONFIGURASI QUEUE & BROWSER (ENV READY)
+// =====================================================================
+// parseInt() digunakan untuk mengubah string dari env menjadi angka
+const MAX_ACTIVE = parseInt(process.env.MAX_ACTIVE, 10) || 3;           
+const MAX_QUEUE = parseInt(process.env.MAX_QUEUE, 10) || 12;            
+const QUEUE_TIMEOUT = parseInt(process.env.QUEUE_TIMEOUT, 10) || 60000; 
+const MAX_CONTEXTS = parseInt(process.env.MAX_CONTEXTS, 10) || 5; // Kita turunkan default ke 5 agar RAM cepat bersih        // Restart browser setiap 10 task agar RAM bersih
 
 let activeTasks = 0;
 const tasks = {};
