@@ -18,7 +18,7 @@ app.use(express.urlencoded({ extended: true }));
 // =====================================================================
 // parseInt() digunakan untuk mengubah string dari env menjadi angka
 const MAX_ACTIVE = parseInt(process.env.MAX_ACTIVE, 10) || 2;           
-const MAX_QUEUE = parseInt(process.env.MAX_QUEUE, 10) || 12;            
+const MAX_QUEUE = parseInt(process.env.MAX_QUEUE, 10) || 4;            
 const QUEUE_TIMEOUT = parseInt(process.env.QUEUE_TIMEOUT, 10) || 60000; 
 const MAX_CONTEXTS = parseInt(process.env.MAX_CONTEXTS, 10) || 5; // Kita turunkan default ke 5 agar RAM cepat bersih        // Restart browser setiap 10 task agar RAM bersih
 
