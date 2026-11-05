@@ -1,4 +1,4 @@
-// app.js — Railway Cloudflare Solver (Full Real-Browser Launch)
+// app.js — Railway Cloudflare Solver (Optimized & Turnstile Safe)
 
 const express  = require("express");
 const { connect } = require("puppeteer-real-browser");
@@ -19,7 +19,7 @@ app.use(express.urlencoded({ extended: true }));
 const MAX_ACTIVE    = parseInt(process.env.MAX_ACTIVE, 10)    || 2;
 const MAX_QUEUE     = parseInt(process.env.MAX_QUEUE, 10)     || 4;
 const QUEUE_TIMEOUT = parseInt(process.env.QUEUE_TIMEOUT, 10) || 60000;
-const MAX_CONTEXTS  = parseInt(process.env.MAX_CONTEXTS, 10)  || 10;
+const MAX_CONTEXTS  = parseInt(process.env.MAX_CONTEXTS, 10)  || 5; // Turunkan ke 5 agar RAM cepat bersih
 const TASK_TIMEOUT  = parseInt(process.env.TASK_TIMEOUT, 10)  || 120000;
 
 let activeTasks     = 0;
@@ -37,28 +37,36 @@ const queue = [];
 async function init_browser() {
     if (!browser || !browser.isConnected()) {
         if (!browserStarting) {
-            console.log("[BROWSER] Meluncurkan Chromium (Railway Mode)...");
+            console.log("[BROWSER] Meluncurkan Chromium (Railway Safe Mode)...");
             
             browserStarting = connect({
-                headless: false,      // Wajib false agar Cloudflare lolos (Headful)
+                headless: false,      // Wajib false agar Cloudflare lolos
                 turnstile: true,      
-                disableXvfb: false,   // Wajib false di Railway agar xvfb-run otomatis dijalankan
+                disableXvfb: false,   // Wajib false agar Railway menjalankan Xvfb
                 customConfig: {
-                    // KUNCI PERBAIKAN: Arahkan ke Chromium yang diinstal via Dockerfile
                     chromePath: process.env.CHROME_PATH || '/usr/bin/chromium',
                     args: [
                         '--no-sandbox',
                         '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',
+                        
+                        // 🛑 MATIKAN GPU (Hemat RAM & Aman untuk Turnstile)
                         '--disable-gpu',
                         '--disable-software-rasterizer',
-                        '--disable-dev-shm-usage',
+                        
+                        // 🧠 BATASI MEMORI V8 (Mencegah OOM)
                         '--js-flags="--max-old-space-size=256"',
-                        '--renderer-process-limit=2',
+                        '--renderer-process-limit=2', // Biarkan 2 proses untuk mencegah Cloudflare block
+                        
+                        // 🚫 MATIKAN FITUR LATAR BELAKANG
                         '--disable-background-networking',
                         '--disable-component-update',
                         '--disable-default-apps',
                         '--disable-extensions',
-                        '--disable-sync'
+                        '--disable-sync',
+                        '--mute-audio',
+                        '--no-first-run',
+                        '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints,RenderDocument'
                     ]
                 }
             }).then(ctx => {
@@ -79,7 +87,6 @@ async function init_browser() {
         await browserStarting;
     }
 
-    // Buat konteks dan halaman baru
     const context = await browser.createBrowserContext();
     const page = await context.newPage();
     page.setDefaultNavigationTimeout(60000);
@@ -97,7 +104,7 @@ async function reset_browser() {
         browser = null;
         browserStarting = null;
         contextCounter = 0;
-        console.log("[BROWSER] Chromium ditutup dan di-reset.");
+        console.log("[BROWSER] Chromium di-reset (RAM Cleared).");
     } finally {
         isResetting = false;
     }
@@ -135,7 +142,7 @@ function processQueue() {
 }
 
 // ============================================================
-// SOLVER TASK (Turnstile / Interstitial)
+// SOLVER TASK
 // ============================================================
 function withTimeout(factory, ms) {
     let timer;
@@ -149,7 +156,7 @@ function withTimeout(factory, ms) {
 async function executeTask(taskId, data) {
     let ctx = null;
     try {
-        // Reset browser secara berkala untuk membersihkan RAM
+        // Reset browser setiap 5 task agar RAM tidak menumpuk
         if (contextCounter >= MAX_CONTEXTS) {
             await reset_browser();
         }
@@ -159,9 +166,8 @@ async function executeTask(taskId, data) {
 
         const page = ctx.page;
 
-        // Proxy per-task tidak didukung di mode launch
         if (data.proxyObj) {
-            console.warn(`[Task ${taskId}] Proxy per-task diabaikan. Gunakan proxy saat launch.`);
+            console.warn(`[Task ${taskId}] Proxy per-task diabaikan di Railway Launch Mode.`);
         }
 
         let result;
@@ -214,6 +220,7 @@ async function executeTask(taskId, data) {
     } finally {
         if (ctx) {
             try {
+                // Bersihkan context SEGERA agar RAM langsung turun
                 if (ctx.page)    await ctx.page.close().catch(() => {});
                 if (ctx.context) await ctx.context.close().catch(() => {});
                 console.log(`[Task ${taskId}] Browser context cleaned up.`);
@@ -359,9 +366,10 @@ app.use((err, req, res, next) => {
 // ============================================================
 const server = app.listen(port, "0.0.0.0", () => {
     console.log("====================================");
-    console.log("Railway Chromium Solver (Real-Browser)");
+    console.log("Railway Chromium Solver (Safe Mode)");
     console.log("Port:", port);
     console.log("CHROME_PATH:", process.env.CHROME_PATH || '/usr/bin/chromium');
+    console.log("MAX_CONTEXTS:", MAX_CONTEXTS);
     console.log("====================================");
 });
 
