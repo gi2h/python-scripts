@@ -1,5 +1,5 @@
 /**
- * API_TURNSTILE (v15.0 Fixed URL Intercept + Checkbox Clicker)
+ * API_TURNSTILE (v17.0 - Perfect Synergy with Real-Browser)
  */
 async function turnstile({ domain, siteKey, action, cdata, pagedata }, page) {
     const timeout = 120000; 
@@ -14,12 +14,24 @@ async function turnstile({ domain, siteKey, action, cdata, pagedata }, page) {
         const htmlContent = `
             <!DOCTYPE html>
             <html lang="en">
-            <head><meta charset="utf-8"><title>Verify</title></head>
-            <body style="padding:50px; display:flex; justify-content:center;">
+            <head>
+                <meta charset="utf-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Verification</title>
+                <style>
+                    body { 
+                        margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #f9f9f9; 
+                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                    }
+                    #cf-container { margin: auto; }
+                </style>
+            </head>
+            <body>
                 <div id="cf-container" class="cf-turnstile"></div>
                 <script>
                     window.__cfError = null;
                     window.__cfToken = null;
+                    
                     window.onloadTurnstileCallback = function () {
                         try {
                             turnstile.render('#cf-container', {
@@ -35,9 +47,16 @@ async function turnstile({ domain, siteKey, action, cdata, pagedata }, page) {
                                     c.value = token;
                                     document.body.appendChild(c);
                                 },
-                                'error-callback': function(code) { window.__cfError = code; }
+                                'error-callback': function(code) { 
+                                    window.__cfError = code; 
+                                },
+                                'expired-callback': function() {
+                                    window.__cfToken = null;
+                                }
                             });
-                        } catch(e) { window.__cfError = 'render_err'; }
+                        } catch(e) { 
+                            window.__cfError = 'render_err: ' + e.message; 
+                        }
                     };
                 </script>
                 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onloadTurnstileCallback" defer></script>
@@ -46,68 +65,91 @@ async function turnstile({ domain, siteKey, action, cdata, pagedata }, page) {
         `;
 
         await page.setRequestInterception(true);
+        
+        // Hapus listener sebelumnya untuk mencegah memory leak
         page.removeAllListeners("request");
         
+        let intercepted = false;
         page.on("request", async (request) => {
             try {
-                if (request.url().includes(targetHost) && request.resourceType() === "document") {
-                    await request.respond({ status: 200, contentType: "text/html", body: htmlContent });
+                // Intercept HANYA navigasi dokumen utama pertama
+                if (!intercepted && request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+                    intercepted = true;
+                    await request.respond({ 
+                        status: 200, 
+                        contentType: "text/html", 
+                        body: htmlContent 
+                    });
                 } else {
                     await request.continue();
                 }
-            } catch (e) {}
+            } catch (e) {
+                // Abaikan error jika request dibatalkan oleh browser
+            }
         });
 
         console.log(`[ts] Navigasi ke: ${domain}`);
         await page.goto(domain, { waitUntil: "domcontentloaded" }).catch(() => {});
 
-        let lastState = "";
-        let hasClicked = false;
+        let lastLogSec = -1;
+        let lastClickTime = 0;
 
         while (Date.now() - startTime < timeout) {
-            const token = await page.evaluate(() => window.__cfToken || document.querySelector('[name="cf-response"]')?.value).catch(() => null);
+            // 1. Cek Token
+            const token = await page.evaluate(() => {
+                return window.__cfToken || 
+                       document.querySelector('[name="cf-response"]')?.value || 
+                       document.querySelector('input[name="cf-turnstile-response"]')?.value;
+            }).catch(() => null);
+
             if (token && token.length > 10) {
                 console.log(`[ts] ✅ Token didapat! (${token.length} chars)`);
                 return { token, type: "turnstile" };
             }
 
+            // 2. Cek Error Cloudflare
             const errCode = await page.evaluate(() => window.__cfError).catch(() => null);
-            if (errCode) throw new Error(`Widget error code: ${errCode}`);
+            if (errCode) {
+                if (String(errCode).includes('300030')) {
+                    throw new Error(`Invalid Sitekey (Error 300030). Pastikan websiteKey valid untuk domain ${targetHost}.`);
+                }
+                if (String(errCode).includes('600010')) {
+                    throw new Error(`Bot detected (Error 600010). IP atau Browser terdeteksi sebagai otomasi.`);
+                }
+                throw new Error(`Widget error code: ${errCode}`);
+            }
 
-            const frames = page.frames();
-            const cfFrame = frames.find(f => f.url().includes("challenges.cloudflare.com"));
-            
-            if (cfFrame) {
+            // 3. Log status periodik (setiap 5 detik)
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            if (elapsed % 5 === 0 && elapsed > 0 && elapsed !== lastLogSec) {
+                lastLogSec = elapsed;
+                console.log(`[ts] Menunggu token... (${elapsed}s)`);
+            }
+
+            // 4. Simulasi Interaksi Manusia
+            // Kita lakukan klik fisik dengan jeda (mouse down -> delay -> mouse up)
+            if (elapsed >= 3 && (Date.now() - lastClickTime > 4000)) {
                 try {
-                    const frameData = await cfFrame.evaluate(() => {
-                        const text = (document.body?.innerText || "").trim().replace(/\s+/g, " ");
-                        const checkbox = document.querySelector('input[type="checkbox"]');
-                        if (checkbox && !checkbox.checked) {
-                            checkbox.click();
-                            return { text, clicked: true };
-                        }
-                        return { text, clicked: false };
-                    }).catch(() => ({ text: "", clicked: false }));
-
-                    const elapsed = Math.floor((Date.now() - startTime) / 1000);
-                    if (elapsed % 5 === 0 && elapsed > 0 && elapsed !== lastState) {
-                        lastState = elapsed;
-                        console.log(`[ts-iframe] ${elapsed}s | Text: "${frameData.text.slice(0, 50)}"`);
-                    }
-
-                    if (frameData.text.includes("Verify") && !hasClicked) {
-                        console.log(`[ts] 👀 Klik fisik pada checkbox...`);
-                        const iframeElement = await page.$('iframe[src*="challenges.cloudflare.com"]');
-                        if (iframeElement) {
-                            const box = await iframeElement.boundingBox();
-                            if (box) {
-                                await page.mouse.click(box.x + 30, box.y + (box.height / 2));
-                                hasClicked = true;
+                    const iframes = await page.$$('iframe');
+                    for (const frameElement of iframes) {
+                        const src = await frameElement.evaluate(el => el.src).catch(() => "");
+                        if (src.includes("challenges.cloudflare.com")) {
+                            const box = await frameElement.boundingBox().catch(() => null);
+                            if (box && box.width > 0 && box.height > 0) {
+                                // Gerakkan mouse ke area checkbox
+                                await page.mouse.move(box.x + 30, box.y + (box.height / 2), { steps: 5 }).catch(() => {});
+                                await page.mouse.down().catch(() => {});
+                                // Jeda natural 50-150ms sebelum melepas klik
+                                await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
+                                await page.mouse.up().catch(() => {});
+                                
+                                lastClickTime = Date.now();
                             }
                         }
                     }
                 } catch (e) {}
             }
+
             await new Promise(r => setTimeout(r, 1000));
         }
         throw new Error("timeout error");
