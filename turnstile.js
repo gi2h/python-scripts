@@ -1,5 +1,5 @@
 /**
- * API_TURNSTILE (v15.0 - Proven Working Version + Safe Catch)
+ * API_TURNSTILE (v15.0 - Proven Working)
  */
 async function turnstile({ domain, siteKey, action, cdata, pagedata }, page) {
     const timeout = 120000; 
@@ -46,20 +46,17 @@ async function turnstile({ domain, siteKey, action, cdata, pagedata }, page) {
         `;
 
         await page.setRequestInterception(true);
-        
-        // Hapus listener lain (seperti dari stealth) agar fokus pada interceptor ini
         page.removeAllListeners("request");
         
         page.on("request", async (request) => {
             try {
+                // Logika Interceptor Asli v15.0
                 if (request.url().includes(targetHost) && request.resourceType() === "document") {
                     await request.respond({ status: 200, contentType: "text/html", body: htmlContent });
                 } else {
                     await request.continue();
                 }
-            } catch (e) {
-                // Abaikan error jika request sudah terlanjur dibatalkan
-            }
+            } catch (e) {}
         });
 
         console.log(`[ts] Navigasi ke: ${domain}`);
@@ -69,7 +66,7 @@ async function turnstile({ domain, siteKey, action, cdata, pagedata }, page) {
         let hasClicked = false;
 
         while (Date.now() - startTime < timeout) {
-            // 1. Cek Token (Tambah .catch agar tidak crash)
+            // 1. Cek Token (Aman dari crash)
             const token = await page.evaluate(() => window.__cfToken || document.querySelector('[name="cf-response"]')?.value).catch(() => null);
             
             if (token && token.length > 10) {
@@ -77,19 +74,15 @@ async function turnstile({ domain, siteKey, action, cdata, pagedata }, page) {
                 return { token, type: "turnstile" };
             }
 
-            // 2. Cek Error (Tambah .catch agar tidak crash)
+            // 2. Cek Error
             const errCode = await page.evaluate(() => window.__cfError).catch(() => null);
             if (errCode) {
-                if (String(errCode).includes('300030')) {
-                    throw new Error(`Invalid Sitekey (Error 300030).`);
-                }
-                if (String(errCode).includes('600010')) {
-                    throw new Error(`Bot detected (Error 600010).`);
-                }
+                if (String(errCode).includes('300030')) throw new Error(`Invalid Sitekey (300030)`);
+                if (String(errCode).includes('600010')) throw new Error(`Bot detected (600010)`);
                 throw new Error(`Widget error code: ${errCode}`);
             }
 
-            // 3. Log & Klik Checkbox (Logika asli v15.0)
+            // 3. Log & Klik Checkbox
             const frames = page.frames();
             const cfFrame = frames.find(f => f.url().includes("challenges.cloudflare.com"));
             
