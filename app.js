@@ -32,20 +32,23 @@ const tasks = Object.create(null);
 const queue = [];
 
 // ============================================================
-// BROWSER MANAGEMENT (Real-Browser Launch)
+// BROWSER MANAGEMENT (Railway Optimized)
 // ============================================================
 async function init_browser() {
     if (!browser || !browser.isConnected()) {
         if (!browserStarting) {
-            console.log("[BROWSER] Meluncurkan Chromium via Real-Browser (Railway Mode)...");
+            console.log("[BROWSER] Meluncurkan Chromium (Railway Mode)...");
             
             browserStarting = connect({
-                headless: false,      // Wajib false agar Cloudflare lolos
-                turnstile: true,      // Aktifkan auto-solve Turnstile bawaan (jika ada)
+                headless: false,      // Wajib false agar Cloudflare lolos (Headful)
+                turnstile: true,      
                 disableXvfb: false,   // Wajib false di Railway agar xvfb-run otomatis dijalankan
                 customConfig: {
+                    // KUNCI PERBAIKAN: Arahkan ke Chromium yang diinstal via Dockerfile
+                    chromePath: process.env.CHROME_PATH || '/usr/bin/chromium',
                     args: [
                         '--no-sandbox',
+                        '--disable-setuid-sandbox',
                         '--disable-gpu',
                         '--disable-software-rasterizer',
                         '--disable-dev-shm-usage',
@@ -146,7 +149,7 @@ function withTimeout(factory, ms) {
 async function executeTask(taskId, data) {
     let ctx = null;
     try {
-        // Reset browser secara berkala untuk membersihkan RAM (Railway free tier RAM terbatas)
+        // Reset browser secara berkala untuk membersihkan RAM
         if (contextCounter >= MAX_CONTEXTS) {
             await reset_browser();
         }
@@ -156,8 +159,7 @@ async function executeTask(taskId, data) {
 
         const page = ctx.page;
 
-        // Catatan: Proxy per-task TIDAK didukung di mode launch.
-        // Jika butuh proxy, tambahkan --proxy-server=... di customConfig.args saat launch.
+        // Proxy per-task tidak didukung di mode launch
         if (data.proxyObj) {
             console.warn(`[Task ${taskId}] Proxy per-task diabaikan. Gunakan proxy saat launch.`);
         }
@@ -282,7 +284,7 @@ app.post("/solve", async (req, res) => {
             });
         }
 
-        // --- PARSE PROXY (Hanya untuk kompatibilitas API) ---
+        // --- PARSE PROXY ---
         let proxyObj = null;
         try {
             if (rawProxy && typeof rawProxy === "object" && rawProxy.host) {
@@ -359,9 +361,7 @@ const server = app.listen(port, "0.0.0.0", () => {
     console.log("====================================");
     console.log("Railway Chromium Solver (Real-Browser)");
     console.log("Port:", port);
-    console.log("MAX_ACTIVE:", MAX_ACTIVE);
-    console.log("MAX_QUEUE:", MAX_QUEUE);
-    console.log("MAX_CONTEXTS:", MAX_CONTEXTS);
+    console.log("CHROME_PATH:", process.env.CHROME_PATH || '/usr/bin/chromium');
     console.log("====================================");
 });
 
