@@ -25,7 +25,7 @@ const MAX_CONTEXTS  = parseInt(process.env.MAX_CONTEXTS, 10)  || 5;
 const TASK_TIMEOUT  = parseInt(process.env.TASK_TIMEOUT, 10)  || 120000;
 
 // RAM thresholds (total container, termasuk Chromium)
-const RAM_SOFT_MB   = parseInt(process.env.RAM_SOFT_MB, 10)   || 380;
+const RAM_SOFT_MB   = parseInt(process.env.RAM_SOFT_MB, 10)   || 580;
 const RAM_HARD_MB   = parseInt(process.env.RAM_HARD_MB, 10)   || 580;
 
 // Interval pengawas
