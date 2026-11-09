@@ -14,7 +14,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 const MAX_ACTIVE    = parseInt(process.env.MAX_ACTIVE, 10)    || 1;
-const MAX_QUEUE     = parseInt(process.env.MAX_QUEUE, 10)     || 6;
+const MAX_QUEUE     = parseInt(process.env.MAX_QUEUE, 10)     || 5;
 const QUEUE_TIMEOUT = parseInt(process.env.QUEUE_TIMEOUT, 10) || 60000;
 const TASK_TIMEOUT  = parseInt(process.env.TASK_TIMEOUT, 10)  || 120000;
 
