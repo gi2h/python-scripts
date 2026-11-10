@@ -1,5 +1,6 @@
 name: Manual Redeploy
 on:
+  push:
   workflow_dispatch:
 
 permissions:
