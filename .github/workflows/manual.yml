@@ -1,0 +1,20 @@
+name: Manual Redeploy
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          mkdir -p auto-triggers
+          date > auto-triggers/manual-run.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add auto-triggers/
+          git commit -m "Manual trigger update"
+          git push
