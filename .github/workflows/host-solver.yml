@@ -31,7 +31,6 @@ jobs:
       - name: Install Chrome Dependencies (Ubuntu 24.04 Compatible)
         run: |
           sudo apt-get update
-          # libasound2 diganti menjadi libasound2t64 untuk Ubuntu 24.04
           sudo apt-get install -y libnss3 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64
 
       - name: Download Cloudflared
@@ -60,8 +59,8 @@ jobs:
           
           echo "✅ URL Solver Ditemukan: $URL"
           
-          # 3. Bersihkan file sampah agar Git tidak error
-          rm -f solver.log cf_log.txt cloudflared
+          # 3. Bersihkan file sampah (TAPI JANGAN HAPUS solver.log)
+          rm -f cf_log.txt cloudflared
           git checkout -- .
           
           # 4. Tarik update terbaru dari GitHub
@@ -78,4 +77,14 @@ jobs:
       - name: Keep Server Alive
         run: |
           echo "Solver berjalan. Menunggu 4 jam 55 menit..."
-          sleep 17700
+          # Jika Anda ingin melihat log secepatnya untuk testing, ubah 17700 menjadi 60 (1 menit)
+          sleep 17700 
+
+      # --- BAGIAN UPLOAD LOG (Sudah diperbaiki spasinya) ---
+      - name: Upload Solver Log
+        if: always() 
+        uses: actions/upload-artifact@v4
+        with:
+          name: solver-log
+          path: solver.log
+          retention-days: 1
