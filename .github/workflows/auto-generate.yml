@@ -1,7 +1,7 @@
 name: Auto Generate Folder & File for Railway Redeploy
 on:
   schedule:
-    - cron: '15 * * * *'
+    - cron: '15 * * * *' 
   workflow_dispatch:
 
 permissions:
