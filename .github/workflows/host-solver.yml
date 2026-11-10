@@ -20,13 +20,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Pull latest changes
+        run: |
+          git pull origin main
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Install Dependencies
-        run: npm install
+        run: |
+          # Install ulang library untuk memastikan tidak ada yang hilang
+          npm install
 
       - name: Download Cloudflared
         run: |
@@ -37,14 +43,10 @@ jobs:
         env:
           PORT: 7860
         run: |
-          # 1. Jalankan solver & cloudflared di background
           node app.js > solver.log 2>&1 &
           ./cloudflared tunnel --url http://localhost:7860 > cf_log.txt 2>&1 &
-          
-          # 2. Tunggu Cloudflare membuat URL
           sleep 15
           
-          # 3. Ekstrak URL
           URL=$(grep -o 'https://[-a-z0-9]*\.trycloudflare\.com' cf_log.txt | head -n 1)
           
           if [ -z "$URL" ]; then
@@ -55,18 +57,14 @@ jobs:
           fi
           
           echo "✅ URL Solver Ditemukan: $URL"
-          
-          # 4. HANYA bersihkan file log. JANGAN hapus node_modules!
-          rm -f solver.log cf_log.txt cloudflared
-          
-          # 5. Simpan URL dan push
           echo $URL > solver_url.txt
+          
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add solver_url.txt
           git commit -m "Update Solver URL [skip ci]"
           
-          # 6. Push paksa (mengabaikan file sampah lain agar tidak error 128)
+          # Push paksa agar tidak error 128
           git push origin main
 
       - name: Keep Server Alive
