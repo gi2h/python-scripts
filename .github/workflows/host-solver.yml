@@ -1,0 +1,60 @@
+name: Host Solver 24/7
+
+on:
+  schedule:
+    # Berjalan setiap 5 jam sekali (sebelum batas 6 jam GitHub habis)
+    - cron: '0 */5 * * *'
+  workflow_dispatch: # Bisa dijalankan manual
+
+permissions:
+  contents: write
+
+jobs:
+  run-solver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350 # Maksimal 5 jam 50 menit agar aman dari timeout
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Download Cloudflared
+        run: |
+          wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
+          chmod +x cloudflared
+
+      - name: Start Solver and Tunnel
+        run: |
+          # 1. Jalankan solver di background (Port 7860 sesuai gambar Anda)
+          node app.js > solver.log 2>&1 &
+          
+          # 2. Jalankan cloudflared dan simpan log-nya
+          ./cloudflared tunnel --url http://localhost:7860 > cf_log.txt 2>&1 &
+          
+          # 3. Tunggu 15 detik agar URL Cloudflare muncul
+          sleep 15
+          
+          # 4. Ekstrak URL dari log
+          URL=$(grep -o 'https://[-a-z0-9]*\.trycloudflare\.com' cf_log.txt | head -n 1)
+          echo "URL Solver Ditemukan: $URL"
+          
+          # 5. Simpan URL ke file solver_url.txt
+          echo $URL > solver_url.txt
+          
+          # 6. Commit dan Push file URL ke GitHub
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add solver_url.txt
+          git commit -m "Update Solver URL [skip ci]"
+          git push
+
+      - name: Keep Alive (Tidur selama 5 jam)
+        run: sleep 18000
