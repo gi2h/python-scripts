@@ -20,9 +20,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Pull latest changes
-        run: git pull origin main
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -31,12 +28,11 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
-      # --- TAMBAHKAN BAGIAN INI ---
-      - name: Install Chrome Dependencies
+      - name: Install Chrome Dependencies (Ubuntu 24.04 Compatible)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libnss3 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2
-      # ----------------------------
+          # libasound2 diganti menjadi libasound2t64 untuk Ubuntu 24.04
+          sudo apt-get install -y libnss3 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64
 
       - name: Download Cloudflared
         run: |
@@ -47,10 +43,12 @@ jobs:
         env:
           PORT: 7860
         run: |
+          # 1. Jalankan solver & cloudflared
           node app.js > solver.log 2>&1 &
           ./cloudflared tunnel --url http://localhost:7860 > cf_log.txt 2>&1 &
           sleep 15
           
+          # 2. Ambil URL
           URL=$(grep -o 'https://[-a-z0-9]*\.trycloudflare\.com' cf_log.txt | head -n 1)
           
           if [ -z "$URL" ]; then
@@ -61,8 +59,16 @@ jobs:
           fi
           
           echo "✅ URL Solver Ditemukan: $URL"
-          echo $URL > solver_url.txt
           
+          # 3. Bersihkan file sampah agar Git tidak error
+          rm -f solver.log cf_log.txt cloudflared
+          git checkout -- .
+          
+          # 4. Tarik update terbaru dari GitHub
+          git pull origin main --rebase
+          
+          # 5. Simpan URL dan Push
+          echo $URL > solver_url.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add solver_url.txt
