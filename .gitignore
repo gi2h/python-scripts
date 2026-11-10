@@ -1,0 +1,5 @@
+node_modules/
+solver.log
+cf_log.txt
+cloudflared
+Api.zip
