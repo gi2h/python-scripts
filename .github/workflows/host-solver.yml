@@ -56,20 +56,17 @@ jobs:
           
           echo "✅ URL Solver Ditemukan: $URL"
           
-          # 4. BERSIHKAN SAMPAH (Ini solusi error 128)
+          # 4. HANYA bersihkan file log. JANGAN hapus node_modules!
           rm -f solver.log cf_log.txt cloudflared
-          git checkout -- .
-          git clean -fd
           
-          # 5. Tarik update terbaru (jika ada dari bot lain)
-          git pull origin main
-          
-          # 6. Simpan URL, commit, dan push
+          # 5. Simpan URL dan push
           echo $URL > solver_url.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add solver_url.txt
           git commit -m "Update Solver URL [skip ci]"
+          
+          # 6. Push paksa (mengabaikan file sampah lain agar tidak error 128)
           git push origin main
 
       - name: Keep Server Alive
