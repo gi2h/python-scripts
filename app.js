@@ -1,4 +1,4 @@
-// app.js — Ubuntu Proot (Context Recycling Mode)
+// app.js — Ubuntu Proot (Context Recycli ng Mode)
 const express  = require("express");
 const { connect } = require("puppeteer-real-browser");
 const crypto   = require("crypto");
