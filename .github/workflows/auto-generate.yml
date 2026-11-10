@@ -1,0 +1,56 @@
+name: Auto Generate Folder & File for Railway Redeploy
+
+on:
+  # 1. Berjalan otomatis setiap jam (menit ke-15)
+  schedule:
+    - cron: '15 * * * *'
+  
+  # 2. Memungkinkan dijalankan manual dari tab Actions
+  workflow_dispatch:
+  
+  # 3. Berjalan otomatis saat file ini di-commit pertama kali
+  push:
+
+# Memberikan izin kepada bot untuk melakukan push (commit)
+permissions:
+  contents: write
+
+jobs:
+  generate-and-commit:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Langkah 1: Mengambil kode dari repositori
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      # Langkah 2: Mengatur identitas bot GitHub
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # Langkah 3: Membuat folder dan file timestamp
+      - name: Create Folder and File
+        run: |
+          # Membuat folder auto-triggers
+          mkdir -p auto-triggers
+          
+          # Membuat nama file berdasarkan waktu saat ini
+          TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+          
+          # Menulis timestamp ke dalam file
+          echo "Railway Redeploy Triggered at: $TIMESTAMP" > "auto-triggers/trigger-${TIMESTAMP}.txt"
+          
+          # Menampilkan daftar file untuk log
+          ls -la auto-triggers/
+
+      # Langkah 4: Melakukan commit dan push ke GitHub
+      - name: Commit and Push
+        run: |
+          git add auto-triggers/
+          git commit -m "chore: auto-generate trigger file [skip ci]"
+          git push
