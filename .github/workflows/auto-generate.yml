@@ -1,0 +1,36 @@
+name: Auto Generate Folder & File for Railway Redeploy
+on:
+  schedule:
+    - cron: '15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  generate-and-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create Folder and File
+        run: |
+          mkdir -p auto-triggers
+          TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+          echo "Triggered at: $TIMESTAMP" > "auto-triggers/trigger-${TIMESTAMP}.txt"
+          ls -la auto-triggers/
+
+      - name: Commit and Push
+        run: |
+          git add auto-triggers/
+          git commit -m "chore: auto-generate trigger file [skip ci]"
+          git push origin main
