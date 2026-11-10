@@ -12,7 +12,7 @@ permissions:
 jobs:
   run-solver:
     runs-on: ubuntu-latest
-    timeout-minutes: 350 
+    timeout-minutes: 350
 
     steps:
       - name: Checkout repository
@@ -35,40 +35,42 @@ jobs:
 
       - name: Start Solver and Get URL
         env:
-          # Jika app.js Anda butuh API KEY, masukkan di sini (atau via GitHub Secrets)
-          PORT: 7860 
+          PORT: 7860
         run: |
-          # 1. Jalankan solver (pastikan port sesuai dengan yang ada di app.js)
+          # 1. Jalankan solver & cloudflared di background
           node app.js > solver.log 2>&1 &
-          
-          # 2. Jalankan cloudflared
           ./cloudflared tunnel --url http://localhost:7860 > cf_log.txt 2>&1 &
           
-          # 3. Tunggu 15 detik
+          # 2. Tunggu Cloudflare membuat URL
           sleep 15
           
-          # 4. Ambil URL
+          # 3. Ekstrak URL
           URL=$(grep -o 'https://[-a-z0-9]*\.trycloudflare\.com' cf_log.txt | head -n 1)
           
-          # 5. Cek jika URL gagal didapat (berarti solver/cloudflared crash)
           if [ -z "$URL" ]; then
-            echo "❌ ERROR: Gagal mendapatkan URL. Berikut adalah log solver:"
+            echo "❌ ERROR: Gagal mendapatkan URL."
             cat solver.log
-            echo "Berikut adalah log cloudflared:"
             cat cf_log.txt
             exit 1
           fi
           
           echo "✅ URL Solver Ditemukan: $URL"
-          echo $URL > solver_url.txt
           
-          # 6. Commit dan Push (dengan Rebase agar tidak bentrok dengan bot auto-generate)
+          # 4. BERSIHKAN SAMPAH (Ini solusi error 128)
+          rm -f solver.log cf_log.txt cloudflared
+          git checkout -- .
+          git clean -fd
+          
+          # 5. Tarik update terbaru (jika ada dari bot lain)
+          git pull origin main
+          
+          # 6. Simpan URL, commit, dan push
+          echo $URL > solver_url.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add solver_url.txt
           git commit -m "Update Solver URL [skip ci]"
-          git pull --rebase origin main
-          git push
+          git push origin main
 
       - name: Keep Server Alive
         run: |
