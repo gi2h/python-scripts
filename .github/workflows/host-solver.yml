@@ -1,12 +1,9 @@
 name: Host Solver 24/7
 
 on:
-  # 1. Berjalan otomatis setiap 5 jam
   schedule:
     - cron: '0 */5 * * *'
-  # 2. Berjalan saat Anda menyimpan file ini (untuk tes pertama)
   push:
-  # 3. Bisa dijalankan manual
   workflow_dispatch:
 
 permissions:
@@ -15,7 +12,6 @@ permissions:
 jobs:
   run-solver:
     runs-on: ubuntu-latest
-    # Batas maksimal GitHub adalah 6 jam. Kita set 5 jam 50 menit agar aman.
     timeout-minutes: 350 
 
     steps:
@@ -38,38 +34,43 @@ jobs:
           chmod +x cloudflared
 
       - name: Start Solver and Get URL
+        env:
+          # Jika app.js Anda butuh API KEY, masukkan di sini (atau via GitHub Secrets)
+          PORT: 7860 
         run: |
-          # 1. Jalankan solver di background (Port 7860 sesuai Colab Anda)
+          # 1. Jalankan solver (pastikan port sesuai dengan yang ada di app.js)
           node app.js > solver.log 2>&1 &
           
           # 2. Jalankan cloudflared
           ./cloudflared tunnel --url http://localhost:7860 > cf_log.txt 2>&1 &
           
-          # 3. Tunggu 15 detik agar URL muncul di log
+          # 3. Tunggu 15 detik
           sleep 15
           
-          # 4. Ambil URL dari log
+          # 4. Ambil URL
           URL=$(grep -o 'https://[-a-z0-9]*\.trycloudflare\.com' cf_log.txt | head -n 1)
-          echo "URL Solver Ditemukan: $URL"
           
+          # 5. Cek jika URL gagal didapat (berarti solver/cloudflared crash)
           if [ -z "$URL" ]; then
-            echo "Gagal mendapatkan URL! Cek log cloudflared."
+            echo "❌ ERROR: Gagal mendapatkan URL. Berikut adalah log solver:"
+            cat solver.log
+            echo "Berikut adalah log cloudflared:"
             cat cf_log.txt
             exit 1
           fi
           
-          # 5. Simpan ke file solver_url.txt
+          echo "✅ URL Solver Ditemukan: $URL"
           echo $URL > solver_url.txt
           
-          # 6. Commit dan Push
+          # 6. Commit dan Push (dengan Rebase agar tidak bentrok dengan bot auto-generate)
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add solver_url.txt
           git commit -m "Update Solver URL [skip ci]"
+          git pull --rebase origin main
           git push
 
       - name: Keep Server Alive
         run: |
           echo "Solver berjalan. Menunggu 4 jam 55 menit..."
-          # Sleep selama 17700 detik (4 jam 55 menit) agar tidak bentrok dengan jadwal cron berikutnya
           sleep 17700
