@@ -78,7 +78,7 @@ jobs:
         run: |
           echo "Solver berjalan. Menunggu 4 jam 55 menit..."
           # Jika Anda ingin melihat log secepatnya untuk testing, ubah 17700 menjadi 60 (1 menit)
-          sleep 60 
+          sleep 600990000
 
       # --- BAGIAN UPLOAD LOG (Sudah diperbaiki spasinya) ---
       - name: Upload Solver Log
